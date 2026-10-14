@@ -62,7 +62,11 @@ During a turn that ends in tool calls, the Chat runs the batch:
 - **A raising `execute` isolates.** Any other `StandardError` becomes that
   call's error result (content = the message, `is_error: true`); siblings are
   unaffected and the turn completes. `CancelledError` is re-raised, never
-  laundered into a result.
+  laundered into a result. `ArgumentError` is the one other exception: it
+  re-raises out of the batch — Ruby raises it at the dispatch boundary when
+  `execute`'s signature cannot accept the call's arguments (the tool body
+  never ran — a tool-declaration defect), so it fails loud instead of
+  isolating.
 - **Cancel aborts the batch.** A cancel mid-batch aborts the in-flight
   children; `step` raises `CancelledError` and NO tool results are appended.
   See [How to cancel a running chat](../how-to/cancel-a-running-chat.md).
