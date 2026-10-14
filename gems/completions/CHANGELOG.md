@@ -21,8 +21,13 @@ one section per released version, newest first.
   the frozen error taxonomy (ApiError tree, TimeoutError,
   ConnectionError, CancelledError).
 - `Chat` runs the agent turn: build → stream → yield events → execute
-  tool calls serially with cancellation checkpoints and before/after
-  hooks keyed by tool-call id.
+  the tool batch CONCURRENTLY (one reactor task per call, children of
+  the step task) with results appended in call order, per-call failure
+  isolation (a raised error becomes that call's error result while
+  siblings complete), and the batch cancel discipline (a cancel aborts
+  the in-flight calls and surfaces `CancelledError` with no partial
+  results) — cancellation checkpoints and before/after hooks keyed by
+  tool-call id.
 - Replay normalization ports pi's cross-model thinking rules: same-model
   signature replay (`reasoning` / `reasoning_content` / `reasoning_text`),
   `reasoning_details` array replay, cross-model folding to text,
