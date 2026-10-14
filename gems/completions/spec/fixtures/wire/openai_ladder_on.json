@@ -1,0 +1,5 @@
+{
+  "tag": "openai_ladder_on",
+  "request_path": "/v1/chat/completions",
+  "request_body": "{\"model\":\"mock-1\",\"messages\":[{\"role\":\"developer\",\"content\":\"You are a test assistant.\"},{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true},\"store\":false,\"max_completion_tokens\":512,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read\",\"description\":\"Read file contents.\",\"parameters\":{\"type\":\"object\",\"required\":[\"path\"],\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"number\"}}}}}],\"reasoning_effort\":\"high\"}"
+}
