@@ -1,0 +1,4 @@
+-I gems/completions/lib
+-I gems/completions/spec
+--require spec_helper
+--pattern gems/completions/spec/fast/**/*_spec.rb
