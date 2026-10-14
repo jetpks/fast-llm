@@ -1,22 +1,36 @@
 # fast-completions
 
-`Fast::Completions` is a standalone, fiber-native client for
-**the OpenAI-compatible chat-completions wire**, byte-faithful to pi's
-wire behavior. It speaks `POST {base}/chat/completions` with SSE
-streaming.
+`Fast::Completions` is a fast & focused HTTP client for OpenAI-compatible chat
+completions APIs. It speaks `POST {base}/chat/completions` and supports SSE
+streaming. It's implemented on top of [socketry/async-http] and won't block
+your reactor.
 
-It does NOT speak the legacy text-completions API (`/v1/completions`) —
-that legacy endpoint is a different wire, and this gem never emits it.
+## Fast & Focused
 
-## What it is NOT
+This gem is laser focused on **just the chat completions API**
 
-- No model catalog, no pricing, no provider registry. The consumer owns
-  models; the gem owns the wire.
-- No universal translation. Dialects are **declarations** — a closed,
-  small vocabulary the codec obeys. (LiteLLM's translate-everything
-  ambition is the anti-shape.)
-- No retries, no images over the wire, no non-streaming requests. The
-  client always streams.
+It does:
+
+* Streaming chat completions
+* Tool calling ([see the tool docs])
+* Pre-made & Custom "Dialects" (common API variations) ([see the dialect docs])
+
+There are also a bunch of things `Fast::Completions` _does not_ do:
+
+* No model catalog
+* No other API shapes 
+* No universal translation
+* No synchronous requests (streaming only)
+* No images over the wire
+
+## Dialects
+
+Various providers/models make slight deviations from the "official" API. To
+support a wide variety of shapes, we have a concept of "Dialects." The default
+dialect is `:openai`, and we also ship `:zai`, `:deepseek`, and `:fireworks`.
+
+Custom dialects can also be declared at runtime. See the [Dialect Docs] for
+more info.
 
 ## Installation
 
@@ -24,9 +38,7 @@ that legacy endpoint is a different wire, and this gem never emits it.
 gem "fast-completions"
 ```
 
-The ONLY runtime dependency is `async-http` (`async`/`io-event` arrive
-transitively). Nothing else rides along — the whole transport is the
-async socketry stack.
+The only runtime dependency is `async-http`.
 
 ## Quickstart
 
@@ -57,7 +69,7 @@ client = Fast::Completions::Client.new(
   api_key: ENV["API_KEY"],
 )
 
-Async do |task| # fiber-native: runs inside YOUR reactor
+Async do |task| # fiber-native!
   chat = Fast::Completions::Chat.new(client: client, model: model)
   chat.with_instructions("You are a helpful assistant.")
       .with_tools(ReadFile)
