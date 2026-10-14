@@ -7,7 +7,8 @@ Ruby gems, each named for the API it speaks.
 
 - [`gems/completions`](gems/completions/README.md) — `fast-completions`
   (`Fast::Completions`), a fiber-native client for the
-  OpenAI-compatible chat-completions wire, byte-faithful to pi.
+  OpenAI-compatible chat-completions wire, byte-faithful to pi. Docs live
+  under [`gems/completions/docs/`](gems/completions/docs/).
 
 ## The naming rule
 

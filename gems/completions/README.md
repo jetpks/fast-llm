@@ -108,18 +108,9 @@ Re-declaring a name overrides — last declaration wins.
 
 ## Error taxonomy
 
-| Error | Raised for |
-|---|---|
-| `Fast::Completions::Error` | base of the API error tree |
-| `ApiError(status:, body:)` | any non-2xx (`"<status>: <message>"`) |
-| `BadRequestError` | 400 |
-| `ContextLengthExceededError` | 400 matching a context-overflow pattern |
-| `AuthenticationError` / `PermissionError` / `NotFoundError` / `RateLimitError` | 401 / 403 / 404 / 429 |
-| `ServerError` | 5xx |
-| `TimeoutError` | TTFB deadline or read inactivity (one timeout value) |
-| `ConnectionError` | ECONNREFUSED, ECONNRESET, … |
-| `StreamError` | terminal stream errors (emits `:error` first) |
-| `CancelledError` | task cancellation (NOT under `Error`) |
+The error table moved to [the error docs](docs/reference/errors.md) —
+every class with the status mapping, the timeout and connection families,
+and why `CancelledError` stands outside `Error`.
 
 ## Parity
 
@@ -135,3 +126,7 @@ requests run inside the caller's reactor — the gem never creates its
 own. Cancellation (`Async::Cancel` / `Chat#cancel`) aborts the
 in-flight request, discards the connection, and raises
 `CancelledError` with no phantom terminal event.
+[see the tool docs]: docs/reference/tools.md
+[see the dialect docs]: docs/reference/dialects.md
+[Dialect Docs]: docs/reference/dialects.md
+[socketry/async-http]: https://github.com/socketry/async-http
