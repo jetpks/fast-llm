@@ -25,12 +25,34 @@ module Fast
           end
           @parameters || {"type" => "object", "properties" => {}}
         end
+
+        # pi types.ts :736-754: constrainedSampling?: false |
+        # {type:"json_schema", strict:"prefer"|"require"}. Default nil
+        # (undeclared — no strict participation); false is the explicit
+        # opt-out, wire-equivalent to nil. ANY other shape raises here, at
+        # declaration time — fail loud, never silently mistranslate
+        # (unknown type — grammar included, the named exclusion — unknown
+        # strict value, missing keys, non-Hash values).
+        UNSET = Object.new.freeze # nil is NOT a passable value (raises below)
+
+        def constrained_sampling(config = UNSET)
+          return @constrained_sampling if config.equal?(UNSET)
+
+          unless config == false || (config.is_a?(Hash) &&
+              config["type"] == "json_schema" && %w[prefer require].include?(config["strict"]))
+            raise ArgumentError,
+              "constrained_sampling must be false or {\"type\" => \"json_schema\", " \
+              "\"strict\" => \"prefer\"|\"require\"}; got #{config.inspect}"
+          end
+          @constrained_sampling = config
+        end
       end
 
       # Instance readers forward to the class declaration.
       def description = self.class.description
       def tool_name = self.class.tool_name
       def parameters = self.class.parameters
+      def constrained_sampling = self.class.constrained_sampling
 
       # The wire name: the declared tool_name if set, else the class name (§11).
       def name

@@ -95,6 +95,88 @@ RSpec.describe Fast::Completions::Protocol do
       expect(build(ladder_model, tools: [tool])).not_to have_key(:tool_stream)
     end
 
+    describe "strict tool emission (I63 — pi convertTools openai-completions.ts :1505-1516)" do
+      def read_tool(strict_config)
+        Class.new(Fast::Completions::Tool) do
+          tool_name "read"
+          description "Read file contents."
+          parameters do
+            {"type" => "object", "required" => ["path"],
+             "properties" => {"path" => {"type" => "string"}, "offset" => {"type" => "number"}}}
+          end
+          constrained_sampling strict_config unless strict_config == :absent
+        end.new
+      end
+
+      it "declared-strict tool on a strict dialect: the rewrite + strict:true, strict right after parameters (pi key order)" do
+        hash = build(ladder_model(dialect: :zai), tools: [read_tool("type" => "json_schema", "strict" => "prefer")])
+        function = hash[:tools].first["function"]
+        expect(function.keys).to eq(["name", "description", "parameters", "strict"]) # pi key order
+        expect(function["strict"]).to be(true)
+        expect(function["parameters"]).to eq(
+          "type" => "object", "required" => ["path", "offset"],
+          "properties" => {"path" => {"type" => "string"},
+                           "offset" => {"anyOf" => [{"type" => "number"}, {"type" => "null"}]}},
+          "additionalProperties" => false,
+        )
+      end
+
+      it "emitted strict parameters are a COPY — the declared Hash is never the strict wire object" do
+        tool = read_tool("type" => "json_schema", "strict" => "require")
+        function = build(ladder_model(dialect: :zai), tools: [tool])[:tools].first["function"]
+        expect(function["parameters"]).not_to equal(tool.parameters) # a different object (deep copy)
+        expect(function["parameters"]["properties"]).not_to equal(tool.parameters["properties"])
+      end
+
+      it "undeclared tool on a strict dialect: strict:false with VERBATIM parameters (object identity holds)" do
+        tool = read_tool(:absent)
+        function = build(ladder_model(dialect: :zai), tools: [tool])[:tools].first["function"]
+        expect(function["strict"]).to be(false)
+        expect(function["parameters"]).to equal(tool.parameters) # same object: verbatim
+      end
+
+      it "explicit-false tool on a strict dialect is wire-equivalent to undeclared (strict:false, verbatim)" do
+        tool = read_tool(false)
+        function = build(ladder_model(dialect: :zai), tools: [tool])[:tools].first["function"]
+        expect(function["strict"]).to be(false)
+        expect(function["parameters"]).to equal(tool.parameters)
+      end
+
+      it "declared tool on a NON-strict dialect: NO strict key ever, verbatim, byte-equal to the undeclared build" do
+        declared = read_tool("type" => "json_schema", "strict" => "prefer")
+        hash = build(ladder_model, tools: [declared]) # the anonymous default: supports_strict_mode false
+        function = hash[:tools].first["function"]
+        expect(function).not_to have_key("strict")
+        expect(function["parameters"]).to equal(declared.parameters)
+        undeclared = JSON.generate(build(ladder_model, tools: [read_tool(:absent)])[:tools])
+        expect(JSON.generate(hash[:tools])).to eq(undeclared) # byte-equal builds
+      end
+
+      it "require-raise surfaces through build_request: unsupportable schema on a strict dialect (pi template)" do
+        tool = Class.new(Fast::Completions::Tool) do
+          tool_name "read"
+          parameters do
+            {"type" => "object", "properties" => {"x" => {"$ref" => "#/$defs/x"}}}
+          end
+          constrained_sampling "type" => "json_schema", "strict" => "require"
+        end.new
+        expect { build(ladder_model(dialect: :zai), tools: [tool]) }
+          .to raise_error(
+            Fast::Completions::ConstrainedSamplingError,
+            'Tool "read" requires JSON-schema constrained sampling, but $ref schemas are unsupported.'
+          )
+      end
+
+      it "require-raise surfaces through build_request: strict-capable schema on a non-strict dialect (pi template)" do
+        tool = read_tool("type" => "json_schema", "strict" => "require")
+        expect { build(ladder_model, tools: [tool]) }
+          .to raise_error(
+            Fast::Completions::ConstrainedSamplingError,
+            'Tool "read" requires JSON-schema constrained sampling, but strict tools are unsupported.'
+          )
+      end
+    end
+
     describe "thinking arms (§9.9)" do
       it "zai: enabled+clear_thinking with effort, disabled without; effort map-else-level" do
         zai = ladder_model(thinking_level_map: {off: "disabled", high: "high"}, dialect: :zai)

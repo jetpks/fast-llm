@@ -66,18 +66,32 @@ module Fast
       end
 
       # §9.8 / pi buildParams :853-863: tools iff declared (declaration
-      # order; parameters VERBATIM — the consumer's schema is the bytes);
-      # zai tool_stream right after; the `tools: []` fallback when tool
-      # history exists with no declared tools.
+      # order). Parameters stay VERBATIM — the consumer's schema is the
+      # bytes — EXCEPT the I63 strict arm: a tool declaring
+      # constrained_sampling on a strict dialect ships the strict REWRITE
+      # (pi convertTools :1505-1516, getJsonSchemaToolParameters) and the
+      # function object carries "strict" right after "parameters" (pi key
+      # order: name, description, parameters, strict) — declared-strict
+      # true, undeclared/loose false. VERBATIM remains the discipline for
+      # undeclared tools and non-strict dialects: no strict key ever there,
+      # and the emitted parameters are the declared object itself
+      # (object-identity emission). zai tool_stream right after; the
+      # `tools: []` fallback when tool history exists with no declared
+      # tools.
       def apply_tools(params, tools, messages, dialect)
         if tools.any?
+          strict_capable = dialect.supports_strict_mode
           params[:tools] = tools.map do |tool|
-            {"type" => "function",
-             "function" => {
-               "name" => tool.name,
-               "description" => tool.description,
-               "parameters" => tool.parameters,
-             }}
+            strict = ConstrainedSampling.resolve_json_schema_strict_sampling(tool, strict_capable)
+            function = {
+              "name" => tool.name,
+              "description" => tool.description,
+              "parameters" => strict == true ? ConstrainedSampling.make_strict_json_schema(tool.parameters) : tool.parameters,
+            }
+            # pi :1513 — the explicit key on EVERY function tool when the
+            # dialect supports strict mode ("Some reject unknown fields").
+            function["strict"] = strict || false if strict_capable
+            {"type" => "function", "function" => function}
           end
           params[:tool_stream] = true if dialect.zai_tool_stream
         elsif tool_history?(messages)

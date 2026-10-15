@@ -3,6 +3,27 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## Unreleased
+
+- Strict-sampling tool schemas (pi constrained-sampling, JSON-schema half):
+  tools declare `constrained_sampling` — `false` (explicit opt-out) or
+  `{"type" => "json_schema", "strict" => "prefer"|"require"}`; any other
+  shape raises `ArgumentError` at declaration (grammar-constrained sampling
+  stays out of scope — `type: "grammar"` raises). On a dialect declaring
+  `supports_strict_mode`, a declared tool ships the strict rewrite of its
+  parameters — every property required, non-required null-less properties
+  wrapped in an `anyOf` of the property and `{"type": "null"}`,
+  `additionalProperties: false` appended — with `"strict": true` right after
+  `parameters`; every other function tool on a strict dialect ships
+  `"strict": false` with parameters verbatim (the declared Hash is never
+  mutated — the rewrite deep-copies); tools on non-strict dialects carry no
+  strict key ever, parameters verbatim. `"prefer"` falls back to verbatim
+  silently when the schema is unsupportable; `"require"` raises the new
+  `ConstrainedSamplingError` with pi's message templates. The Dialect
+  vocabulary grows to 14 keys (`supports_strict_mode`, default `false` —
+  OpenAI compatibility alone does not imply strict tool support); the
+  shipped `:zai` declares `true` (pi's glm compat).
+
 ## 0.3.0 (2026-10-15)
 
 - Mid-stream salvage: a failure after a 2xx status — a mid-body connection

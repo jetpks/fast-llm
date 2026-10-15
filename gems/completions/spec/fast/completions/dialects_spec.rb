@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Dialect declaration pins (Specification §4): the closed 13-key
+# Dialect declaration pins (Specification §4): the closed 14-key
 # vocabulary, defaults = the plain arm, the well-known trio, fail-loud
 # validation, last-declaration-wins.
 require "fast/completions"
@@ -21,9 +21,10 @@ RSpec.describe Fast::Completions::Dialect do
     expect(dialect.supports_thinking_token_budget).to be(false)
     expect(dialect.send_session_affinity_headers).to be(false)
     expect(dialect.session_affinity_format).to eq(:openai)
+    expect(dialect.supports_strict_mode).to be(false)
   end
 
-  it "has a CLOSED 13-key vocabulary; unknown keys raise ArgumentError at declaration" do
+  it "has a CLOSED 14-key vocabulary; unknown keys raise ArgumentError at declaration" do
     expect { described_class.new(nil, no_such_key: true) }
       .to raise_error(ArgumentError, /unknown dialect key :no_such_key/)
   end
@@ -55,13 +56,37 @@ RSpec.describe Fast::Completions::Dialect do
 end
 
 RSpec.describe Fast::Completions.dialect(:zai) do
-  it "is the I46 five-key subset + pi's zai store suppression (§4)" do
+  it "is the I46 five-key subset + pi's zai store suppression + strict mode (§4)" do
     expect(subject.thinking_format).to eq(:zai)
     expect(subject.zai_tool_stream).to be(true)
     expect(subject.max_tokens_field).to eq("max_tokens")
     expect(subject.supports_developer_role).to be(false)
     expect(subject.supports_reasoning_effort).to be(true)
     expect(subject.supports_store).to be(false)
+    expect(subject.supports_strict_mode).to be(true)
+  end
+end
+
+RSpec.describe "supports_strict_mode (I63 — the 14th key)" do
+  it "supports_strict_mode defaults false, is a free boolean, and sits last in canonical order" do
+    expect(Fast::Completions::Dialect::VOCABULARY[:supports_strict_mode]).to eq([false, nil])
+    expect(Fast::Completions::Dialect::VOCABULARY.size).to eq(14)
+    dialect = Fast::Completions::Dialect.new(nil)
+    expect(dialect.supports_strict_mode).to be(false)
+    expect(dialect.to_h.keys.last).to eq(:supports_strict_mode) # appended after session_affinity_format
+    expect(Fast::Completions::Dialect.new(nil, supports_strict_mode: true).supports_strict_mode).to be(true)
+  end
+
+  it ":zai declares supports_strict_mode true (pi zai.json glm compat); :deepseek, :fireworks, and the default are false" do
+    expect(Fast::Completions.dialect(:zai).supports_strict_mode).to be(true)
+    expect(Fast::Completions.dialect(:deepseek).supports_strict_mode).to be(false)
+    expect(Fast::Completions.dialect(:fireworks).supports_strict_mode).to be(false)
+    expect(Fast::Completions::Dialects.default.supports_strict_mode).to be(false)
+  end
+
+  it "supports_strict_mode is INSIDE the closed vocabulary — unknown keys still raise ArgumentError at declaration" do
+    expect { Fast::Completions::Dialect.new(nil, no_such_key: true) }
+      .to raise_error(ArgumentError, /unknown dialect key :no_such_key/)
   end
 end
 
