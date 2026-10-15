@@ -254,6 +254,72 @@ RSpec.describe Fast::Completions::Protocol do
       expect(block[:id]).to eq("late")
     end
 
+    describe "index-map backfill (I62 — pi :536-539)" do
+      # The frozen R1 shape (Grounds R1): an id-carrying index-less opener,
+      # then the SAME id carrying the index (found-by-id → backfill), then
+      # bare index-routed continuations. At base this mis-assembles into a
+      # spurious second block — the id-only opener never entered the map.
+      it "backfills the index map on a found-by-id fragment: ONE block, arguments across frag2+frag3, natural :tool_use" do
+        acc = accumulator
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "function" => {"name" => "read", "arguments" => ""}},
+        ]}))
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "index" => 0, "function" => {"arguments" => "{\"path\":\"a.rb\""}},
+        ]}))
+        acc.consume(chunk({"tool_calls" => [
+          {"index" => 0, "function" => {"arguments" => ",\"mode\":\"r\"}"}},
+        ]}))
+        acc.consume({"choices" => [{"delta" => {}, "finish_reason" => "tool_calls"}]})
+        _, outcome = acc.finish
+        expect(outcome).to eq([:done, :tool_use])
+        calls = acc.partial.content.select { |b| b[:type] == :tool_call }
+        expect(calls.size).to eq(1)
+        expect(calls.first[:id]).to eq("c1")
+        expect(calls.first[:arguments]).to eq({"path" => "a.rb", "mode" => "r"})
+      end
+
+      it "first index wins: a later same-id fragment with a DIFFERENT index does not rebind" do
+        acc = accumulator
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "function" => {"name" => "read", "arguments" => ""}},
+        ]}))
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "index" => 0, "function" => {"arguments" => "{\"path\":\"a.rb\"}"}},
+        ]}))
+        # Same id, different index: the block stays bound to index 0 —
+        # so a subsequent bare index-5 fragment opens a FRESH block
+        # (pi parity), proving index 5 was never routed to the block.
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "index" => 5, "function" => {"arguments" => ""}},
+        ]}))
+        acc.consume(chunk({"tool_calls" => [
+          {"index" => 5, "function" => {"arguments" => "{\"x\":1}"}},
+        ]}))
+        acc.consume({"choices" => [{"delta" => {}, "finish_reason" => "tool_calls"}]})
+        acc.finish
+        calls = acc.partial.content.select { |b| b[:type] == :tool_call }
+        expect(calls.size).to eq(2)
+        expect(calls.first[:arguments]).to eq({"path" => "a.rb"})
+        expect(calls.last[:arguments]).to eq({"x" => 1})
+      end
+
+      it "binds without leaking scratch keys onto the emitted message blocks" do
+        acc = accumulator
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "function" => {"name" => "read", "arguments" => ""}},
+        ]}))
+        acc.consume(chunk({"tool_calls" => [
+          {"id" => "c1", "index" => 0, "function" => {"arguments" => "{}"}},
+        ]}))
+        end_events, = acc.finish
+        expect(acc.partial.content.first.keys).to contain_exactly(:type, :id, :name, :arguments)
+        end_events.select { |e| e.type == :tool_call_end }.each do |event|
+          expect(event.tool_call.keys).to contain_exactly(:id, :name, :arguments)
+        end
+      end
+    end
+
     it "live-parses partial arguments best-effort and repairs control chars at finalize (OQ-4)" do
       acc = accumulator
       acc.consume(chunk({"tool_calls" => [

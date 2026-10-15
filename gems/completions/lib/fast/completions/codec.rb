@@ -20,7 +20,9 @@ module Fast
       # ── Pass 1: transform-messages.ts ──────────────────────────────
 
       def normalize(messages, model)
-        transformed = messages.map { |msg| transform_message(msg, model) }
+        # filter_map: the transform pass drops errored/aborted assistants
+        # ENTIRELY (I62, pi :196-206) so pass 2 never sees their tool calls.
+        transformed = messages.filter_map { |msg| transform_message(msg, model) }
         insert_orphan_synthetic_results(transformed)
       end
 
@@ -30,6 +32,12 @@ module Fast
       # (Specification §12.3 note; pi :97-99).
       def transform_message(msg, model)
         return msg unless msg.assistant?
+        # Errored/aborted turns skip replay entirely (pi :196-206): dropped
+        # in THIS pass, so their tool calls never become pending orphans in
+        # pass 2 and never synthesize results — while a PREVIOUS valid
+        # assistant's unanswered calls still flush there, and user/system
+        # messages around the skip are untouched.
+        return nil if msg.stop_reason == :error || msg.stop_reason == :aborted
 
         same_model = msg.provider == model.provider && msg.model == model.id
         content = msg.content.flat_map do |block|
@@ -48,7 +56,7 @@ module Fast
           end
         end
         Message.new(role: :assistant, content: content, provider: msg.provider,
-          model: msg.model, api: msg.api, usage: msg.usage)
+          model: msg.model, api: msg.api, usage: msg.usage, stop_reason: msg.stop_reason)
       end
 
       # Thinking-block rules (transform-messages.ts :103-118):
@@ -61,7 +69,9 @@ module Fast
           return same_model ? [block] : []
         end
         return [block] if same_model && block[:signature]
-        return [] if block[:thinking].nil? || block[:thinking].strip.empty?
+        # scrub: the empty-predicate must not die on defect-class bytes
+        # (I62) — the reasoning-field text is a scrubbed emission position.
+        return [] if block[:thinking].to_s.scrub { "" }.strip.empty?
         return [block] if same_model
 
         [{type: :text, text: block[:thinking]}]
@@ -122,20 +132,44 @@ module Fast
 
       # ── Pass 2: convertMessages (openai-completions.ts :1293-1465) ──
 
+      # pi sanitizeSurrogates (utils/sanitize-unicode.ts :24-27, call sites
+      # :1259/:1265/:1274/:1305/:1326/:1426): invalid sequences DELETED —
+      # "Text \u{D83D} here" → "Text  here", never U+FFFD. String#scrub
+      # { "" } deletes Ruby's whole invalid-encoding class (lone high/low
+      # surrogates, CESU-8 pairs, any malformed bytes — Ruby's class is
+      # broader than JS's) and is a byte-identical no-op on valid strings,
+      # so JSON.generate over the built params never raises
+      # GeneratorError from message content (Grounds row 3).
+      def scrub_text(str)
+        str.is_a?(String) ? str.scrub { "" } : str
+      end
+
+      # Tool-call arguments are message content too (the live-parsed
+      # JSON): string VALUES scrubbed, Hash/Array recursed, other leaves
+      # (numbers, booleans, nil) pass.
+      def scrub_json_values(node)
+        case node
+        when String then scrub_text(node)
+        when Hash then node.each_with_object({}) { |(key, value), out| out[key] = scrub_json_values(value) }
+        when Array then node.map { |item| scrub_json_values(item) }
+        else node
+        end
+      end
+
       # instructions is the ONE leading system/developer message (§9.1,
       # pi :1233): role "developer" iff model.reasoning AND
       # dialect.supports_developer_role, else "system".
       def to_wire_messages(instructions, messages, model, dialect)
         instruction_role = model.reasoning && dialect.supports_developer_role ? "developer" : "system"
         params = []
-        params << {role: instruction_role, content: instructions} if instructions && !instructions.empty?
+        params << {role: instruction_role, content: scrub_text(instructions)} if instructions && !instructions.empty?
 
         messages.each do |msg|
           case msg.role
           when :system
             next if msg.content.to_s.empty?
 
-            params << {role: instruction_role, content: msg.content}
+            params << {role: instruction_role, content: scrub_text(msg.content)}
           when :user
             wire_user(params, msg)
           when :assistant
@@ -152,13 +186,13 @@ module Fast
       # all-empty blocks skip the message (pi :1319-1342).
       def wire_user(params, msg)
         if msg.content.is_a?(String)
-          params << {role: "user", content: msg.content}
+          params << {role: "user", content: scrub_text(msg.content)}
           return
         end
 
         parts = msg.content
           .select { |block| block[:type] == :text && !block[:text].to_s.empty? }
-          .map { |block| {type: "text", text: block[:text]} }
+          .map { |block| {type: "text", text: scrub_text(block[:text])} }
         return if parts.empty?
 
         params << {role: "user", content: parts}
@@ -168,7 +202,7 @@ module Fast
       # tool_call_id:}; empty → "(no tool output)"; NO name key
       # (requires_tool_result_name unported, §14).
       def wire_tool_result(params, msg)
-        text = text_block_texts(msg.content).join("\n")
+        text = scrub_text(text_block_texts(msg.content).join("\n"))
         text = "(no tool output)" if text.empty?
         params << {role: "tool", content: text, tool_call_id: msg.tool_call_id}
       end
@@ -182,7 +216,7 @@ module Fast
         thinking_blocks = msg.content.select { |b| b[:type] == :thinking }
         tool_calls = msg.content.select { |b| b[:type] == :tool_call }
 
-        non_empty_thinking = thinking_blocks.reject { |b| b[:thinking].to_s.strip.empty? }
+        non_empty_thinking = thinking_blocks.reject { |b| b[:thinking].to_s.scrub { "" }.strip.empty? } # scrub: I62 defect-class safety
         # pi computes preservedReasoningDetails over ALL thinking blocks
         # (:1313-1316) and emits it independent of the non-empty branch
         # (:1382-1386) — encrypted-only blocks replay too.
@@ -190,15 +224,15 @@ module Fast
         unless non_empty_thinking.empty?
           if preserved_details.nil?
             field = non_empty_thinking.first[:signature]
-            assistant[field] = non_empty_thinking.map { |b| b[:thinking] }.join("\n") if REASONING_FIELDS.include?(field)
+            assistant[field] = scrub_text(non_empty_thinking.map { |b| b[:thinking] }.join("\n")) if REASONING_FIELDS.include?(field)
           end
         end
 
-        assistant[:content] = text unless text.empty?
+        assistant[:content] = scrub_text(text) unless text.empty?
         unless tool_calls.empty?
           assistant[:tool_calls] = tool_calls.map do |tc|
             {id: tc[:id], type: "function",
-             function: {name: tc[:name], arguments: JSON.generate(tc[:arguments])}}
+             function: {name: tc[:name], arguments: JSON.generate(scrub_json_values(tc[:arguments]))}}
           end
         end
         assistant["reasoning_details"] = preserved_details if preserved_details
@@ -326,8 +360,10 @@ module Fast
 
       def text_block_texts(content, non_whitespace: false)
         blocks = content.is_a?(String) ? [{type: :text, text: content}] : content
+        # scrub before the strip predicate (I62): defect-class bytes must
+        # reach the emission-point scrub, not die in the whitespace filter.
         blocks.select { |b| b.is_a?(Hash) && b[:type] == :text }
-          .map { |b| b[:text].to_s }
+          .map { |b| scrub_text(b[:text]).to_s }
           .then { |texts| non_whitespace ? texts.reject { |t| t.strip.empty? } : texts }
       end
     end

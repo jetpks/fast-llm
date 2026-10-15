@@ -403,7 +403,6 @@ module Fast
           block ||= @tool_by_id[entry["id"]] if entry["id"]
           unless block
             block = {type: :tool_call, id: entry["id"] || "", name: name, arguments: {}}
-            @tool_by_index[index] = block if index
             @tool_by_id[block[:id]] = block unless block[:id].empty?
             @partial.append_block(block)
             events << Event.new(type: :tool_call_start, content_index: content_index(block), partial: @partial)
@@ -413,6 +412,17 @@ module Fast
             @tool_by_id[block[:id]] = block
           end
           block[:name] = name if block[:name].empty? && !name.empty?
+          # Index-map backfill (I62, pi :536-539): a fragment that resolved
+          # its block — by index, by id, or by creation — while CARRYING an
+          # index the block has never bound, binds it here. FIRST index
+          # wins; one index per block, ever. Boundness is tracked
+          # accumulator-side (identity-keyed, like @args_scratch): the
+          # blocks ARE message content — no scratch keys on them.
+          @tool_index_bound ||= {}.compare_by_identity
+          if index && !@tool_index_bound.key?(block)
+            @tool_by_index[index] = block
+            @tool_index_bound[block] = true
+          end
 
           raw = entry.dig("function", "arguments")
           raw = "" unless raw.is_a?(String)

@@ -17,7 +17,7 @@ carry are nil. Every block event carries `partial`; block events also carry
 | `:tool_call_start` | `content_index` | A tool_call block opens |
 | `:tool_call_delta` | `content_index`, `delta` | Raw argument bytes arrive (live-parsed into `partial`) |
 | `:tool_call_end` | `content_index`, `tool_call` | Arguments finalize as `{id:, name:, arguments:}` |
-| `:error` | `reason`, `message` | Client-level: the failed terminal — `StreamError` raises right after |
+| `:error` | `reason`, `message` | Client-level: the failed terminal — `StreamError` raises right after; it also precedes `ConnectionError`/ApiError-family raises, carrying the salvage partial (every streamed block + usage) on mid-stream failures |
 | `:done` | `reason`, `message` | Client-level terminal: the finish reason — `:stop`, `:length`, or `:tool_use` |
 
 ## partial is live
@@ -32,7 +32,8 @@ event, the message already contains everything streamed so far, and the
 The first non-empty of `reasoning_content`, `reasoning`, `reasoning_text` in a
 delta names the thinking block; later deltas carrying the same field append to
 it. Provider `reasoning_details` accumulate separately and serialize into the
-block's signature once, at `thinking_end`.
+block's signature once, at `thinking_end` — or at a mid-stream salvage, so a
+salvaged partial replays like a completed one's.
 
 ## The step block contract
 
