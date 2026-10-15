@@ -138,10 +138,12 @@ module Fast
       ROLES = %i[system user assistant tool_result].freeze
 
       attr_reader :role, :content, :provider, :model, :api, :usage,
-        :tool_call_id, :tool_name, :is_error, :response_id, :response_model
+        :tool_call_id, :tool_name, :is_error, :response_id, :response_model,
+        :stop_reason
 
       def initialize(role:, content:, provider: nil, model: nil, api: nil,
-        tool_call_id: nil, tool_name: nil, is_error: false, usage: nil)
+        tool_call_id: nil, tool_name: nil, is_error: false, usage: nil,
+        stop_reason: nil)
         unless ROLES.include?(role)
           raise ArgumentError, "role must be one of #{ROLES.inspect}, got #{role.inspect}"
         end
@@ -155,6 +157,10 @@ module Fast
         @tool_name = tool_name
         @is_error = is_error == true
         @usage = usage
+        # Stream/replay metadata (I62, pi transform-messages :196-206): nil
+        # default, NO vocabulary validation — consumers may carry their own
+        # values (tart's follow-up threads the stream's mapped reasons).
+        @stop_reason = stop_reason
         @response_id = nil
         @response_model = nil
       end
@@ -190,12 +196,13 @@ module Fast
         new(role: :system, content: content).freeze
       end
 
-      def self.assistant(content, provider: nil, model: nil, api: nil)
+      def self.assistant(content, provider: nil, model: nil, api: nil, stop_reason: nil)
         unless content.is_a?(Array)
           raise ArgumentError, "assistant content must be an Array of block hashes"
         end
 
-        new(role: :assistant, content: content, provider: provider, model: model, api: api).freeze
+        new(role: :assistant, content: content, provider: provider, model: model, api: api,
+          stop_reason: stop_reason).freeze
       end
 
       def self.tool_result(tool_call_id:, content:, tool_name: nil, is_error: false)
@@ -219,6 +226,7 @@ module Fast
         out[:usage] = @usage.to_h if @usage
         out[:response_id] = @response_id if @response_id
         out[:response_model] = @response_model if @response_model
+        out[:stop_reason] = @stop_reason if @stop_reason
         out
       end
 
@@ -234,6 +242,7 @@ module Fast
           tool_name: hash[:tool_name],
           is_error: hash[:is_error] == true,
           usage: hash[:usage] && Usage.new(**hash[:usage].transform_keys(&:to_sym)),
+          stop_reason: hash[:stop_reason]&.to_sym,
         )
         message.set_response_id(hash[:response_id]) if hash[:response_id]
         message.set_response_model(hash[:response_model]) if hash[:response_model]
