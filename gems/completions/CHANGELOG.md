@@ -3,7 +3,7 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
-## Unreleased
+## 0.2.0 (2026-10-15)
 
 - Tolerant inbound stream (I61): a malformed SSE chunk no longer kills
   the turn. The parser rejoins a data payload cut across lines by a raw
