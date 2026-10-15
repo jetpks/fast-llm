@@ -6,21 +6,28 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: "specs (ruby ${{ matrix.ruby }})"
+  tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        # Every supported minor, from the floor (required_ruby_version) to
+        # the dev version; mise resolves each to its latest patch.
         ruby: ["3.3", "3.4", "4.0"]
+    env:
+      BUNDLE_PATH: vendor/bundle
+      MISE_RUBY_VERSION: ${{ matrix.ruby }}
     steps:
       - uses: actions/checkout@v7
-      - uses: ruby/setup-ruby@v1
+      - uses: jdx/mise-action@v4
+      - uses: actions/cache@v6
         with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
+          path: vendor/bundle
+          key: bundle-ruby-${{ matrix.ruby }}-${{ hashFiles('Gemfile.lock') }}
+          restore-keys: bundle-ruby-${{ matrix.ruby }}-
       # Monorepo: the ROOT Gemfile is the entry point (gemspec path:
       # gems/completions) and .rspec routes the run at the gem's specs.
+      - run: bundle install
       - run: bundle exec rspec --format progress 2>&1 | tee /tmp/rspec.log
       - if: always()
         name: Summary
@@ -38,11 +45,11 @@ jobs:
   # directory and prove the package carries lib/.
   gem-build:
     runs-on: ubuntu-latest
+    env:
+      MISE_RUBY_VERSION: "4.0"
     steps:
       - uses: actions/checkout@v7
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "4.0"
+      - uses: jdx/mise-action@v4
       - name: Build from the gemspec directory
         working-directory: gems/completions
         run: gem build fast-completions.gemspec
@@ -55,12 +62,18 @@ jobs:
 
   security-audit:
     runs-on: ubuntu-latest
+    env:
+      BUNDLE_PATH: vendor/bundle
+      MISE_RUBY_VERSION: "4.0"
     steps:
       - uses: actions/checkout@v7
-      - uses: ruby/setup-ruby@v1
+      - uses: jdx/mise-action@v4
+      - uses: actions/cache@v6
         with:
-          ruby-version: "4.0"
-          bundler-cache: true
+          path: vendor/bundle
+          key: bundle-ruby-${{ hashFiles('Gemfile.lock') }}
+          restore-keys: bundle-ruby-
+      - run: bundle install
       - run: gem install bundler-audit
       - run: bundler-audit check --update 2>&1 | tee /tmp/audit.log
         continue-on-error: true
