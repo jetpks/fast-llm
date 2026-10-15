@@ -3,7 +3,7 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
-## Unreleased
+## 0.3.0 (2026-10-15)
 
 - Mid-stream salvage: a failure after a 2xx status — a mid-body connection
   abort, the network-error family, or any other exception except
