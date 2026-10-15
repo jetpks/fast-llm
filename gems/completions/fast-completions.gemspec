@@ -14,7 +14,7 @@ Gem::Specification.new do |spec|
 
   spec.authors = ["Eric Jacobs"]
   spec.license = "MIT"
-  spec.homepage = "https://github.com/jetpks/fast-completions"
+  spec.homepage = "https://github.com/jetpks/fast-llm"
 
   spec.required_ruby_version = ">= 3.3"
   spec.required_rubygems_version = ">= 3.5.3"

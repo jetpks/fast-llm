@@ -47,7 +47,7 @@ module Fast
         Errno::ENETUNREACH, Errno::ETIMEDOUT, EOFError, IOError, SocketError,
       ].freeze
 
-      attr_reader :timeout
+      attr_reader :timeout, :dropped_chunks
 
       def initialize(base_url:, api_key:, timeout: DEFAULT_TIMEOUT)
         @endpoint = Async::HTTP::Endpoint.parse(base_url)
@@ -132,17 +132,40 @@ module Fast
 
       def feed_stream(response, accumulator, watchdog, &block)
         parser = SSE.new
+        @dropped_chunks = 0
         response.body.each do |chunk|
           watchdog.arm # re-arm the inactivity read-timeout per chunk (D5)
           parser.push(chunk).each do |item|
             next if item == SSE::DONE # terminal token; no payload
 
-            events = accumulator.consume(JSON.parse(item))
+            json = parse_chunk(item)
+            next if json.nil? # dropped (I61): counted, the stream continues
+
+            events = accumulator.consume(json)
             events.each { |event| yield event } if block
-          rescue JSON::ParserError => e
-            raise StreamError.new("malformed stream chunk: #{e.message}", stop_reason: :error)
           end
         end
+      end
+
+      # The chunk seam (I61): parse, on failure ONE repair pass (pi
+      # parseJsonWithRepair — raw control characters inside strings
+      # escaped) and re-parse. StreamError no longer originates from
+      # chunk parsing; §10.5's missing-finish path still covers a dropped
+      # finish-carrying chunk.
+      def parse_chunk(item)
+        JSON.parse(item)
+      rescue JSON::ParserError
+        parse_repaired(item)
+      end
+
+      # The repair re-parse (its own method: a rescue body's exception
+      # needs its own rescue). A payload repair cannot fix is DROPPED —
+      # counted, never raised; the stream continues (I61).
+      def parse_repaired(item)
+        JSON.parse(Protocol.repair_json(item))
+      rescue JSON::ParserError
+        @dropped_chunks += 1
+        nil
       end
 
       # Finalize blocks, then the terminal discipline (§10.5): an error
