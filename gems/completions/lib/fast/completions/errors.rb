@@ -61,6 +61,20 @@ module Fast
 
     class CancelledError < StandardError; end        # NOT < Error (D8)
 
+    # I63 constrained sampling (pi api/constrained-sampling.ts). INTERNAL:
+    # a tool schema outside the strict subset pi's makeStrictJsonSchema
+    # accepts — the reason bytes are pi's literals verbatim. Never escapes
+    # the resolver: "prefer" falls back to loose on it, "require" converts
+    # it to the public ConstrainedSamplingError (pi rethrows only other
+    # error classes).
+    class UnsupportedStrictJsonSchemaError < Error; end
+
+    # PUBLIC: a strict:"require" tool whose schema cannot be strict-rewritten,
+    # or that runs on a dialect without supports_strict_mode — pi's two
+    # message templates verbatim (the inner reason carries no trailing
+    # period; the template adds it).
+    class ConstrainedSamplingError < Error; end
+
     # Internal: error classification helpers (Specification §8).
     module Errors
       # pi utils/overflow.ts :33-96 — the FULL pattern list, ported

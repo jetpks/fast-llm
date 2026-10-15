@@ -6,7 +6,7 @@ module Fast
     # the codec arms. Nothing here is provider detection, a catalog, or a
     # base-URL constant — the consumer declares, the codec obeys (§4).
     #
-    # The vocabulary is CLOSED to the 13 keys declared below. Unknown keys
+    # The vocabulary is CLOSED to the 14 keys declared below. Unknown keys
     # and unknown enum values raise ArgumentError AT DECLARATION TIME —
     # fail loud, never silently mistranslate (the no-universal-translation
     # discipline).
@@ -27,6 +27,9 @@ module Fast
         supports_thinking_token_budget: [false, nil],
         send_session_affinity_headers: [false, nil],
         session_affinity_format: [:openai, %i[openai openai_nosession openrouter].freeze],
+        # I63 (pi detectCompat :1675): OpenAI compatibility alone does not
+        # imply strict JSON-schema tool support — data, not detection.
+        supports_strict_mode: [false, nil],
       }.freeze
 
       attr_reader :name
@@ -154,6 +157,7 @@ module Fast
       supports_developer_role false
       supports_reasoning_effort true
       supports_store false
+      supports_strict_mode true # pi zai.json glm compat: supportsStrictMode:true
     end
 
     Dialects.declare(:deepseek) do

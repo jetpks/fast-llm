@@ -44,4 +44,44 @@ RSpec.describe Fast::Completions::Tool do
   it "#execute is the subclass's job (base raises NotImplementedError)" do
     expect { described_class.new.execute }.to raise_error(NotImplementedError)
   end
+
+  describe "constrained_sampling declaration (I63 — pi types.ts :736-754)" do
+    it "defaults to nil (undeclared — no strict participation), readable from class and instance" do
+      klass = Class.new(described_class)
+      expect(klass.constrained_sampling).to be_nil
+      expect(klass.new.constrained_sampling).to be_nil
+    end
+
+    it "accepts false (the explicit opt-out) and the mirrored json_schema shape; readable from class and instance" do
+      opt_out = Class.new(described_class) { constrained_sampling false }
+      expect(opt_out.constrained_sampling).to be(false)
+      expect(opt_out.new.constrained_sampling).to be(false)
+
+      prefer = Class.new(described_class) { constrained_sampling "type" => "json_schema", "strict" => "prefer" }
+      expect(prefer.constrained_sampling).to eq("type" => "json_schema", "strict" => "prefer")
+      expect(prefer.new.constrained_sampling).to eq("type" => "json_schema", "strict" => "prefer")
+
+      require_shape = {"type" => "json_schema", "strict" => "require"}
+      required = Class.new(described_class) { constrained_sampling("type" => "json_schema", "strict" => "require") }
+      expect(required.constrained_sampling).to eq(require_shape)
+      expect(required.new.constrained_sampling).to eq(require_shape)
+    end
+
+    it "raises ArgumentError AT DECLARATION TIME on any other shape" do
+      expect { Class.new(described_class) { constrained_sampling "type" => "grammar" } }
+        .to raise_error(ArgumentError, /constrained_sampling/) # the named exclusion: nothing half-anticipates grammar
+      expect { Class.new(described_class) { constrained_sampling "type" => "json_schema", "strict" => "sometimes" } }
+        .to raise_error(ArgumentError, /constrained_sampling/)
+      expect { Class.new(described_class) { constrained_sampling "type" => "json_schema" } }
+        .to raise_error(ArgumentError, /constrained_sampling/) # missing strict
+      expect { Class.new(described_class) { constrained_sampling "strict" => "prefer" } }
+        .to raise_error(ArgumentError, /constrained_sampling/) # missing type
+      expect { Class.new(described_class) { constrained_sampling "prefer" } }
+        .to raise_error(ArgumentError, /constrained_sampling/)
+      expect { Class.new(described_class) { constrained_sampling nil } }
+        .to raise_error(ArgumentError, /constrained_sampling/)
+      expect { Class.new(described_class) { constrained_sampling true } }
+        .to raise_error(ArgumentError, /constrained_sampling/)
+    end
+  end
 end

@@ -1,0 +1,5 @@
+{
+  "tag": "zai_strict_tool",
+  "request_path": "/v1/chat/completions",
+  "request_body": "{\"model\":\"mock-1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a test assistant.\"},{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true},\"max_tokens\":512,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read\",\"description\":\"Read file contents.\",\"parameters\":{\"type\":\"object\",\"required\":[\"path\",\"offset\"],\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"anyOf\":[{\"type\":\"number\"},{\"type\":\"null\"}]}},\"additionalProperties\":false},\"strict\":true}}],\"tool_stream\":true,\"thinking\":{\"type\":\"enabled\",\"clear_thinking\":false},\"reasoning_effort\":\"high\"}"
+}

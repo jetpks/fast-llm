@@ -12,6 +12,7 @@ the declaration into the request's `tools` entries and runs the batch.
 | `tool_name "name"` | Optional wire-name override. |
 | `parameters(schema)` | The JSON Schema Hash sent as `function.parameters` — a literal Hash… |
 | `parameters { schema }` | …or a block returning one. Both forms store the Hash verbatim. |
+| `constrained_sampling(config)` | Strict-sampling declaration: `false` (explicit opt-out) or `{"type" => "json_schema", "strict" => "prefer"/"require"}`. Anything else — unknown type (grammar included), unknown strict value, missing keys — raises `ArgumentError` at declaration time. |
 
 The default schema, when `parameters` is never called, is
 `{"type" => "object", "properties" => {}}`.
@@ -20,9 +21,25 @@ The default schema, when `parameters` is never called, is
 basename: a subclass `ReadFile` is `"ReadFile"` on the wire; nested class names
 are split on `::` first.
 
-**Parameters are emitted VERBATIM.** The consumer's schema IS the wire bytes.
-The gem adds no fields, validates nothing, and translates nothing — a
-`parameters` Hash reaches the request exactly as declared.
+**Parameters are emitted VERBATIM.** The consumer's schema IS the wire bytes
+by default. The gem adds no fields, validates nothing, and translates
+nothing — a `parameters` Hash reaches the request exactly as declared, and
+undeclared tools never mutate it.
+
+**The strict-sampling exception (deliberate).** A tool that declares
+`constrained_sampling {"type" => "json_schema", strict: "prefer"|"require"}`
+on a dialect declaring `supports_strict_mode` ships the strict REWRITE of
+its parameters instead: every property required, non-required properties
+that don't allow null wrapped in an `anyOf` of the property and
+`{"type": "null"}`, and `additionalProperties: false` appended — with
+`"strict": true` on the function object, right after `parameters`. The
+rewrite deep-copies; the declared Hash is never mutated. Every OTHER
+function tool on a strict dialect ships `"strict": false` with parameters
+verbatim. Tools on non-strict dialects carry no strict key ever, parameters
+verbatim. `prefer` falls back to verbatim silently when the schema cannot
+be strict-rewritten; `require` raises `ConstrainedSamplingError` with pi's
+message templates (see [Reference: Errors](errors.md)). Grammar-constrained
+sampling is out of scope: `type: "grammar"` raises at declaration.
 
 ## execute
 
