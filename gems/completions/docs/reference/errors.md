@@ -52,8 +52,21 @@ and message preserved: `ECONNREFUSED`, `ECONNRESET`, `EPIPE`, `EHOSTUNREACH`,
 The terminal stream discipline: a provider error `finish_reason`, or a stream
 that ends without the `finish_reason` the dialect expects, emits the
 client-level `:error` event FIRST and then raises `StreamError`
-(`#stop_reason` is `:error`). A malformed stream chunk raises `StreamError`
-mid-stream instead. See
+(`#stop_reason` is `:error`).
+
+A malformed stream chunk no longer raises. The tolerant inbound-stream class
+(I61): a payload the wire mangled is repaired at the chunk seam — raw control
+characters inside strings escaped, pi `parseJsonWithRepair` semantics — and
+flows downstream as if the wire had been well-formed; the SSE parser first
+rejoins a payload cut across lines by a raw newline. A chunk still
+unparseable after rejoin and repair is dropped — counted on
+`Client#dropped_chunks`, never raised — and the stream continues to its
+natural terminal. Two consequences are already-tolerant: a dropped chunk that
+would have carried the `finish_reason` leaves the stream without one, which
+still lands in this missing-finish error path; and a lost arguments fragment
+leaves partial arguments, which the tolerant tool-args finalize and the
+consumer's input validation handle as a clean tool error (the model re-calls
+the tool). See
 [Reference: Stream events](stream-events.md) for the event.
 
 ## CancelledError is not under Error

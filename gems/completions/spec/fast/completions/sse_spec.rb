@@ -54,4 +54,30 @@ RSpec.describe Fast::Completions::SSE do
   it "emits nothing for an event with no data lines" do
     expect(items("event: ping\n\ndata: x\n\n")).to eq(["x"])
   end
+
+  # ── Continuation rejoin (I61): the malformed-wire salvage. ──────
+
+  it "appends an unprefixed continuation line to the open payload with no separator (I61)" do
+    expect(items("data: {\"n\":\n42}\n\n")).to eq([{"n" => 42}.to_json])
+  end
+
+  it "chains multiple continuation lines onto the open payload (I61)" do
+    expect(items("data: {\"n\":\n4\n2}\n\n")).to eq([{"n" => 42}.to_json])
+  end
+
+  it "known SSE fields stay ignored mid-payload (I61 pin)" do
+    expect(items("data: {\"n\":\nid: 7\nevent: ping\nretry: 3000\n42}\n\n")).to eq([{"n" => 42}.to_json])
+  end
+
+  it "comments stay ignored mid-payload (I61 pin)" do
+    expect(items("data: {\"n\":\n: keepalive\n42}\n\n")).to eq([{"n" => 42}.to_json])
+  end
+
+  it "a stray unprefixed line with NO open payload stays ignored (unchanged)" do
+    expect(items("event: ping\nstray\n\ndata: x\n\n")).to eq(["x"])
+  end
+
+  it "a data line after a continuation opens the next data line (data lines still join with \\n)" do
+    expect(items("data: A\ncont\ndata: B\n\n")).to eq(["Acont\nB"])
+  end
 end

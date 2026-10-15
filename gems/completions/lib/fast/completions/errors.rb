@@ -32,7 +32,10 @@ module Fast
     class ConnectionError < Error; end               # ECONNREFUSED/ECONNRESET/... (§6)
 
     # Terminal stream errors (pi throws inside stream; the gem emits the
-    # :error event first, then raises this — §10.5).
+    # :error event first, then raises this — §10.5). NOT the malformed-
+    # chunk path since I61: a malformed chunk is repaired at the seam,
+    # else dropped and counted while the stream continues. What remains
+    # here: a provider error finish_reason or a missing finish.
     class StreamError < Error
       attr_reader :stop_reason
 
