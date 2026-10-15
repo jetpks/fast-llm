@@ -32,14 +32,17 @@ jobs:
           mkdir -p ../../pkg/
           mv *.gem ../../pkg/
 
-      # The pre-release rule (fast-* family): install the built .gem into
-      # an isolated GEM_HOME and exercise it from there — the checkout's
-      # lib/ is never on the load path — so a file missing from spec.files
-      # or a require-path mistake fails here, not after publishing.
+      # The pre-release rule (fast-* family), monorepo-adapted: install
+      # the built .gem into an isolated GEM_HOME and exercise it from there
+      # — the checkout's lib/ is never on the load path — so a file missing
+      # from spec.files or a require-path mistake fails here, not after
+      # publishing. Unlike fast-uuid this gem HAS a runtime dependency
+      # (async-http), so the install resolves it from rubygems (no
+      # --local): isolation of the packaged code, not of the network.
       - name: Verify the packaged gem
         run: |
           export GEM_HOME="$RUNNER_TEMP/gemhome"
-          gem install --local --no-document pkg/fast-completions-*.gem
+          gem install --no-document pkg/fast-completions-*.gem
           cd "$RUNNER_TEMP"
           ruby -e '
             require "fast/completions"
