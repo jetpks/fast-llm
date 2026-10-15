@@ -11,6 +11,13 @@ module Fast
     # multi-data-line event concatenates with "\n"; `data: [DONE]` is the
     # terminal token and surfaces as the distinguished SSE::DONE
     # sentinel, NOT a payload.
+    #
+    # Continuation rejoin (I61): a provider that coalesces deltas can cut
+    # a payload's JSON with a raw newline; the remainder then arrives
+    # UNPREFIXED on the next line. While a data payload is open
+    # (mid-event), such a line is appended to it — no separator. Comments
+    # and the known SSE fields (event:/id:/retry:) keep their ignore
+    # semantics; a healthy wire carries no such lines at all.
     class SSE
       # Distinguished terminal token for `data: [DONE]` (§7).
       DONE = Object.new.freeze
@@ -53,8 +60,15 @@ module Fast
           payload = line.delete_prefix("data:")
           payload = payload[1..] if payload.start_with?(" ") # strip exactly one space
           @data_lines << payload
+          return nil
         end
-        # event:/id:/retry: and anything else: not on this wire; ignored.
+
+        # Known SSE fields stay ignored, even mid-payload.
+        return nil if line.start_with?("event:", "id:", "retry:")
+
+        # Unprefixed continuation of the open payload (I61); with no
+        # payload open, ignored as before.
+        @data_lines.last << line unless @data_lines.empty?
         nil
       end
 

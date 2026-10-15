@@ -68,6 +68,37 @@ RSpec.describe Fast::Completions::Client do
     expect(final.usage.total_tokens).to eq(15) # the mock's 10+5
   end
 
+  # ── Chunk-seam tolerance (I61): repair and drop-and-continue. ──
+
+  it "repairs a control-char payload and flows downstream without a drop (I61)" do
+    cut = %(data: {"choices":[{"delta":{"content":"a\ndata: b\t c"}}]}\n\n) # raw \n via multi-data-line join, raw \t
+    finisher = %(data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n)
+    server.script([{type: :stream, raw_frames: [cut, finisher, "data: [DONE]\n\n"]}])
+    final = nil
+    c = client
+    Async do
+      final = c.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+      c.close
+    end
+    expect(final.content).to eq([{type: :text, text: "a\nb\t c"}])
+    expect(c.dropped_chunks).to eq(0)
+  end
+
+  it "counts dropped chunks on dropped_chunks and resets the counter per stream (I61)" do
+    unrepairable = 'data: {"choices":[{"delta":{"content":"x"}}' # truncated, unbalanced braces
+    finisher = %(data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n)
+    spec = {type: :stream, raw_frames: [unrepairable + "\n\n", finisher, "data: [DONE]\n\n"]}
+    server.script([spec, spec])
+    c = client
+    Async do
+      2.times do
+        c.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        expect(c.dropped_chunks).to eq(1) # 1 on each stream: not cumulative
+      end
+      c.close
+    end
+  end
+
   it "maps non-2xx to the §8 tree and passes the provider message" do
     server.script([{type: :error, status: 429, message: "slow down"}])
     Async do

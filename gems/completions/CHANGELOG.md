@@ -3,6 +3,20 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## Unreleased
+
+- Tolerant inbound stream (I61): a malformed SSE chunk no longer kills
+  the turn. The parser rejoins a data payload cut across lines by a raw
+  newline (the z.ai coalesced-delta malformation observed 2026-10-15),
+  the chunk seam repairs raw control characters inside strings (pi
+  `parseJsonWithRepair` semantics) and re-parses, and a chunk still
+  unparseable after rejoin and repair is dropped and counted
+  (`Client#dropped_chunks`) while the stream continues to its natural
+  terminal. `StreamError` no longer originates from chunk parsing; the
+  missing-finish terminal discipline (§10.5) is unchanged. Healthy
+  wires are byte-unaffected — the malformed shapes do not occur on
+  them.
+
 ## 0.1.0
 
 - Initial release. `Fast::Completions` is a standalone, fiber-native

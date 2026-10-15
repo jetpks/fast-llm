@@ -40,6 +40,10 @@ require "json"
 #   {type: :stream, reasoning_content: "thinking"}  (a `reasoning_content` delta
 #     before the content deltas — the thinking-model wire shape)
 #   {type: :stream, chunks: [delta_hashes...]}   (raw deltas, full control)
+#   {type: :stream, raw_frames: ["data: ...\n\n", ...]} (VERBATIM wire bytes
+#     through the chunked writer, comment lines included — malformed-wire
+#     fixtures (I61); NO usage chunk and NO [DONE] are appended, the frames
+#     carry exactly what the wire should say)
 #   {type: :message, content: "text"}            (non-streaming JSON)
 #   {type: :slow_stream, content:, chunk_every:} (streams slowly, for interrupts)
 #   {type: :error, status: 400, message: "..."}  (HTTP error the client raises
@@ -185,14 +189,17 @@ class MockLLMServer
   end
 
   def respond_stream(io, spec)
-    deltas = spec[:type] == :slow_stream ? slow_deltas(spec) : deltas_for(spec)
     io.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
-    deltas.each do |delta|
-      write_sse(io, delta)
+    if spec[:raw_frames] # I61: verbatim malformed-wire bytes, chunked framing only
+      spec[:raw_frames].each { |frame| write_chunk(io, frame) }
+    else
+      deltas = spec[:type] == :slow_stream ? slow_deltas(spec) : deltas_for(spec)
+      deltas.each do |delta|
+        write_sse(io, delta)
+      end
+      write_sse(io, {usage: {prompt_tokens: 10, completion_tokens: 5, total_tokens: 15}}) unless @suppress_usage
+      write_chunk(io, "data: [DONE]\n\n")
     end
-    write_sse(io, {usage: {prompt_tokens: 10, completion_tokens: 5, total_tokens: 15}}) unless @suppress_usage
-    done = "data: [DONE]\n\n"
-    io.write(format("%x\r\n%s\r\n", done.bytesize, done))
     io.write("0\r\n\r\n")
   end
 
