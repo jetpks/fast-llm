@@ -10,6 +10,9 @@ module Fast
     # Non-2xx responses map here (pi maps the OpenAI SDK status error).
     # #message is "<status>: <provider message>" — the provider's
     # error.message when the body parses, else the raw body truncated.
+    # I62: a non-2xx raise happens only after the creation-retry decision,
+    # and the client-level `:error` event (empty partial, no `:start`)
+    # precedes every such raise (§1 creation-phase discipline).
     class ApiError < Error
       attr_reader :status, :body
 
@@ -28,14 +31,25 @@ module Fast
     class RateLimitError < ApiError; end             # 429
     class ServerError < ApiError; end                # 5xx
 
-    class TimeoutError < Error; end                  # TTFB deadline / read inactivity (D5)
-    class ConnectionError < Error; end               # ECONNREFUSED/ECONNRESET/... (§6)
+    # TTFB deadline / read inactivity (D5). I62: a TTFB fire before the
+    # response is a statusless retry trigger — a retried deadline re-arms
+    # per attempt, and the final failure still surfaces this class, never
+    # CancelledError. A mid-stream read inactivity arrives as
+    # Async::Cancel through the untouched cancel ladder (no retry, no
+    # terminal event).
+    class TimeoutError < Error; end
+    # ECONNREFUSED/ECONNRESET/... (§6). I62: a mid-body network failure
+    # salvages the partial as the `:error` terminal BEFORE this raise
+    # (message form `"<class>: <message>"` preserved); at creation the
+    # same terminal carries the empty accumulator after retries exhaust.
+    class ConnectionError < Error; end
 
     # Terminal stream errors (pi throws inside stream; the gem emits the
     # :error event first, then raises this — §10.5). NOT the malformed-
     # chunk path since I61: a malformed chunk is repaired at the seam,
     # else dropped and counted while the stream continues. What remains
-    # here: a provider error finish_reason or a missing finish.
+    # here: a provider error finish_reason or a missing finish. I62 did
+    # not change this path — it IS the model for the new salvage arm.
     class StreamError < Error
       attr_reader :stop_reason
 
