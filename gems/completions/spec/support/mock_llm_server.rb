@@ -46,8 +46,14 @@ require "json"
 #     carry exactly what the wire should say)
 #   {type: :message, content: "text"}            (non-streaming JSON)
 #   {type: :slow_stream, content:, chunk_every:} (streams slowly, for interrupts)
-#   {type: :error, status: 400, message: "..."}  (HTTP error the client raises
-#     on — the gem maps it through the §8 error tree)
+#   {type: :error, status: 400, message: "...", headers: {"x-should-retry" => "true"}}
+#                                              (HTTP error the client raises on — the gem maps
+#                                               it through the §8 error tree; the I62 `headers:` map
+#                                               is written onto the error response verbatim)
+# I62 mid-body abort: `{type: :stream, abort: true}` writes the scripted deltas
+# through the chunked writer, then closes the socket WITHOUT the terminating
+# `0\r\n\r\n` chunk (and without the usage/[DONE] tail), so the client's body
+# read dies mid-stream with a NETWORK_ERRORS-class exception.
 # Every captured request body is pushed to +requests+ (a Queue) for
 # assertions; the full per-request wire entry (method, path, notable
 # headers, body) goes to +request_logs+ for the parity rig.
@@ -180,12 +186,15 @@ class MockLLMServer
   end
 
   # The body openai-compatible endpoints return on a schema rejection;
-  # clients raise on the status before any stream is read.
+  # clients raise on the status before any stream is read. I62: the
+  # optional `headers:` map lands on the response verbatim (the
+  # x-should-retry trigger pins).
   def respond_error(io, spec)
     payload = {error: {message: spec[:message], type: "invalid_request_error"}}
     out = JSON.generate(payload)
     status = spec[:status] || 400
-    io.write("HTTP/1.1 #{status} Bad Request\r\nContent-Type: application/json\r\nContent-Length: #{out.bytesize}\r\n\r\n#{out}")
+    extra = (spec[:headers] || {}).map { |name, value| "#{name}: #{value}\r\n" }.join
+    io.write("HTTP/1.1 #{status} Bad Request\r\nContent-Type: application/json\r\nContent-Length: #{out.bytesize}\r\n#{extra}\r\n#{out}")
   end
 
   def respond_stream(io, spec)
@@ -197,6 +206,12 @@ class MockLLMServer
       deltas.each do |delta|
         write_sse(io, delta)
       end
+      # I62 mid-body abort: the scripted deltas went out through the
+      # chunked writer; the socket now closes WITHOUT the terminating
+      # `0\r\n\r\n` chunk (no usage, no [DONE]) — the client's body read
+      # dies mid-stream with a NETWORK_ERRORS-class exception.
+      return if spec[:abort]
+
       write_sse(io, {usage: {prompt_tokens: 10, completion_tokens: 5, total_tokens: 15}}) unless @suppress_usage
       write_chunk(io, "data: [DONE]\n\n")
     end

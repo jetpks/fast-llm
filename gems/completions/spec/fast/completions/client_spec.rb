@@ -100,10 +100,13 @@ RSpec.describe Fast::Completions::Client do
   end
 
   it "maps non-2xx to the §8 tree and passes the provider message" do
+    # I62: a 429 is a retry trigger at the new default — these §8 mapping
+    # pins pin the single-attempt mapping (max_retries: 0); the trigger
+    # classes live in the retry describe below.
     server.script([{type: :error, status: 429, message: "slow down"}])
     Async do
       expect {
-        client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        client(max_retries: 0).stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
       }.to raise_error(Fast::Completions::RateLimitError, /429: slow down/)
     end
   end
@@ -229,6 +232,284 @@ RSpec.describe Fast::Completions::Client do
       headers = raw_request_headers(dialect: Fast::Completions.dialect(:sess_openai, send_session_affinity_headers: true),
         session_id: nil)
       expect(headers).not_to have_key("session_id")
+    end
+  end
+
+  # ── Request-creation retry (I62 §2): pi provider-retry trigger classes.
+  # The POST — creation through status receipt — retries at most ONE time
+  # by default (Grounds R2), immediately, only on the trigger set; every
+  # final failure raises its mapped error after the :error terminal.
+  describe "request retry (I62 — pi provider-retry trigger classes)" do
+    it "retries a 429 once by default and succeeds (exactly 2 captured requests, no :error terminal)" do
+      server.script([{type: :error, status: 429, message: "slow down"}, {type: :stream, content: "recovered"}])
+      types = []
+      final = nil
+      Async do
+        final = client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) do |event|
+          types << event.type
+        end
+        client.close
+      end
+      expect(final.content).to eq([{type: :text, text: "recovered"}])
+      expect(server.captured_requests.size).to eq(2)
+      expect(types).to eq([:start, :text_start, :text_delta, :text_end, :done]) # the retry is transparent on success
+    end
+
+    it "retries on x-should-retry: true even on a final-class status (400)" do
+      server.script([
+        {type: :error, status: 400, message: "no dice", headers: {"x-should-retry" => "true"}},
+        {type: :stream, content: "ok"},
+      ])
+      final = nil
+      Async do
+        final = client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        client.close
+      end
+      expect(final.content).to eq([{type: :text, text: "ok"}])
+      expect(server.captured_requests.size).to eq(2)
+    end
+
+    it "treats x-should-retry: false as FINAL even on a retryable status (429): 1 request, :error, then RateLimitError" do
+      server.script([{type: :error, status: 429, message: "slow down", headers: {"x-should-retry" => "false"}}])
+      types = []
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |e| types << e.type }
+        }.to raise_error(Fast::Completions::RateLimitError, /429: slow down/)
+        client.close
+      end
+      expect(types).to eq([:error]) # the terminal precedes the raise; no :start for a failed creation
+      expect(server.captured_requests.size).to eq(1)
+    end
+
+    it "treats a plain 400 as final: 1 request, :error, then BadRequestError" do
+      server.script([{type: :error, status: 400, message: "bad"}])
+      types = []
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |e| types << e.type }
+        }.to raise_error(Fast::Completions::BadRequestError)
+        client.close
+      end
+      expect(types).to eq([:error])
+      expect(server.captured_requests.size).to eq(1)
+    end
+
+    it "retries a 5xx (ServerError-class status)" do
+      server.script([{type: :error, status: 500, message: "boom"}, {type: :stream, content: "ok"}])
+      final = nil
+      Async do
+        final = client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        client.close
+      end
+      expect(final.content).to eq([{type: :text, text: "ok"}])
+      expect(server.captured_requests.size).to eq(2)
+    end
+
+    it "retries a 409" do
+      server.script([{type: :error, status: 409, message: "conflict"}, {type: :stream, content: "ok"}])
+      final = nil
+      Async do
+        final = client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        client.close
+      end
+      expect(final.content).to eq([{type: :text, text: "ok"}])
+      expect(server.captured_requests.size).to eq(2)
+    end
+
+    it "retries ECONNREFUSED (nothing listening) as a statusless failure, then raises ConnectionError after the :error terminal" do
+      dead = described_class.new(base_url: "http://127.0.0.1:1/v1", api_key: "k") # nothing listens on port 1
+      types = []
+      Async do
+        expect {
+          dead.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |e| types << e.type }
+        }.to raise_error(Fast::Completions::ConnectionError, /Errno::ECONNREFUSED/)
+        dead.close
+      end
+      expect(types).to eq([:error]) # the terminal precedes the raise; no :start
+    end
+
+    it "retries a TTFB watchdog fire while attempts remain — attempt 2 re-arms and answers (never raises CancelledError)" do
+      # The FIRST POST stalls past the deadline (watchdog fire #1 → retry);
+      # the retried attempt gets a real reply, so the turn SUCCEEDS — only
+      # observable via a retry. Works whether attempt 2 reuses the pooled
+      # connection or opens a fresh one (seen counts POSTs, not connects).
+      stalls = TCPServer.new("127.0.0.1", 0)
+      seen = 0
+      seen_lock = Mutex.new
+      acceptor = Thread.new do
+        loop do
+          io = stalls.accept
+          Thread.new do
+            until io.closed?
+              length = 0
+              loop do
+                line = io.gets
+                break if line.nil? || line == "\r\n"
+
+                length = line[/Content-Length: (\d+)/i, 1].to_i if line.match?(/Content-Length/i)
+              end
+              break if io.closed?
+              io.read(length) # drain the request body: keep the socket framing aligned for the retry
+              count = seen_lock.synchronize { seen += 1 }
+              next if count == 1 # attempt 1: no reply — its TTFB deadline fires and the attempt retries
+
+              frames = ["data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"recovered\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"]
+              payload = frames.map { |f| format("%x\r\n%s\r\n", f.bytesize, f) }.join + "0\r\n\r\n"
+              io.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n#{payload}")
+              break
+            end
+          rescue StandardError, IOError
+            nil
+          end
+        end
+      rescue StandardError, IOError
+        nil
+      end
+      silent = described_class.new(base_url: "http://127.0.0.1:#{stalls.addr[1]}/v1", api_key: "k", timeout: 0.15)
+      final = nil
+      Async do
+        final = silent.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        silent.close
+      end
+      expect(final.content).to eq([{type: :text, text: "recovered"}]) # attempt 2 answered after attempt 1's fire
+    ensure
+      acceptor.exit # bounded teardown: kill the stalled serve threads
+      silent&.close
+      stalls.close
+    end
+
+    it "stops at the bound: two failures raise after exactly 2 requests at the default" do
+      server.script([
+        {type: :error, status: 429, message: "slow down"},
+        {type: :error, status: 429, message: "still slow"},
+      ])
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        }.to raise_error(Fast::Completions::RateLimitError)
+        client.close
+      end
+      expect(server.captured_requests.size).to eq(2)
+    end
+
+    it "max_retries: 0 restores the single attempt" do
+      server.script([
+        {type: :error, status: 429, message: "slow down"},
+        {type: :error, status: 429, message: "never reached"},
+      ])
+      Async do
+        expect {
+          client(max_retries: 0).stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        }.to raise_error(Fast::Completions::RateLimitError)
+        client.close
+      end
+      expect(server.captured_requests.size).to eq(1)
+    end
+
+    it "validates max_retries as an Integer >= 0" do
+      expect { described_class.new(base_url: "http://127.0.0.1:1/v1", api_key: "k", max_retries: -1) }
+        .to raise_error(ArgumentError, /max_retries/)
+      expect { described_class.new(base_url: "http://127.0.0.1:1/v1", api_key: "k", max_retries: "1") }
+        .to raise_error(ArgumentError, /max_retries/)
+    end
+  end
+
+  # ── Mid-stream salvage (I62 §1): pi's :707-728 catch-all. Any failure
+  # after a 2xx — EXCEPT cancellation — yields the ONE :error terminal
+  # carrying the live partial (every streamed block + usage; the thinking
+  # reasoning_details serialized into the signature as finalize would),
+  # with NO block-end events after the failure, THEN raises.
+  describe "mid-stream salvage (I62 — pi :707-728 catch-all)" do
+    it "salvages a mid-body abort: [:start, block events, :error(partial)], no end events, then ConnectionError — exactly 1 request" do
+      server.script([{type: :stream, abort: true, chunks: [
+        {choices: [{delta: {role: "assistant", content: "Hel"}}]},
+        {choices: [{delta: {content: "lo"}}]},
+        {usage: {prompt_tokens: 10, completion_tokens: 5, total_tokens: 15}},
+        {choices: [{delta: {content: "!"}}]},
+      ]}])
+      types = []
+      error_event = nil
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) do |event|
+            types << event.type
+            error_event = event if event.type == :error
+          end
+        }.to raise_error(Fast::Completions::ConnectionError, /EOFError/) # network family, message form preserved
+        client.close
+      end
+      expect(types).to eq([:start, :text_start, :text_delta, :text_delta, :text_delta, :error])
+      expect(types).not_to include(:text_end) # NO block-end events after the failure
+      partial = error_event.message
+      expect(partial.content).to eq([{type: :text, text: "Hello!"}]) # every streamed block
+      expect(partial.usage.total_tokens).to eq(15) # ...and the usage that arrived before the failure
+      expect(server.captured_requests.size).to eq(1) # committed to streaming after the 2xx — NEVER retried
+    end
+
+    it "salvages a creation-phase 429 (retries exhausted) with an EMPTY partial and no :start, then RateLimitError" do
+      server.script([
+        {type: :error, status: 429, message: "slow down"},
+        {type: :error, status: 429, message: "still slow"},
+      ])
+      types = []
+      error_event = nil
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) do |event|
+            types << event.type
+            error_event = event if event.type == :error
+          end
+        }.to raise_error(Fast::Completions::RateLimitError, /429: still slow/)
+        client.close
+      end
+      expect(types).to eq([:error]) # no :start for a failed creation
+      expect(error_event.message.content).to eq([]) # the empty accumulator
+    end
+
+    it "serializes streamed reasoning_details into the salvaged thinking block's signature, as finalize would" do
+      server.script([{type: :stream, abort: true, chunks: [
+        {choices: [{delta: {reasoning_content: "chain"}}]},
+        {choices: [{delta: {reasoning_details: [{type: "reasoning.text", text: "detail"}]}}]},
+        {choices: [{delta: {content: "ans"}}]},
+      ]}])
+      types = []
+      error_event = nil
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) do |event|
+            types << event.type
+            error_event = event if event.type == :error
+          end
+        }.to raise_error(Fast::Completions::ConnectionError)
+        client.close
+      end
+      expect(types).to eq([:start, :thinking_start, :thinking_delta, :text_start, :text_delta, :error])
+      expect(types).not_to include(:thinking_end, :text_end)
+      thinking, text = error_event.message.content
+      expect(thinking).to eq({type: :thinking, thinking: "chain",
+        signature: JSON.generate([{"type" => "reasoning.text", "text" => "detail"}])})
+      expect(text).to eq({type: :text, text: "ans"})
+    end
+
+    it "salvages any other mid-stream StandardError the same way and re-raises it unchanged" do
+      server.script([{type: :stream, content: "Hello"}])
+      types = []
+      error_event = nil
+      Async do
+        expect {
+          client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) do |event|
+            types << event.type
+            error_event = event if event.type == :error
+            raise "boom" if event.type == :text_delta
+          end
+        }.to raise_error(RuntimeError, /boom/) # re-raised unchanged — not mapped, not retried
+        client.close
+      end
+      expect(types).to eq([:start, :text_start, :text_delta, :error])
+      expect(error_event.message.content).to eq([{type: :text, text: "Hello"}])
     end
   end
 end
