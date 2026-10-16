@@ -11,6 +11,7 @@
 | `TimeoutError` | TTFB deadline or read inactivity (one timeout value) |
 | `ConnectionError` | ECONNREFUSED, ECONNRESET, … |
 | `StreamError` | terminal stream errors (emits `:error` first) |
+| `ConstrainedSamplingError` | a strict-`"require"` tool whose schema cannot be strict-rewritten, or a require tool on a dialect without `supports_strict_mode` |
 | `CancelledError` | task cancellation (NOT under `Error`) |
 
 ## Status mapping

@@ -1,6 +1,6 @@
 # Reference: Dialects
 
-A dialect is a declaration: a closed 13-key vocabulary of wire deviations that
+A dialect is a declaration: a closed 14-key vocabulary of wire deviations that
 the codec consumes as data. The default is the plain OpenAI arm; the gem ships
 `:zai`, `:deepseek`, and `:fireworks` as declarations. There is no provider
 detection and no base-URL constant anywhere — the consumer declares, the codec
@@ -25,11 +25,25 @@ Every key, its default, and its allowed values:
 | `supports_thinking_token_budget` | `false` | boolean |
 | `send_session_affinity_headers` | `false` | boolean |
 | `session_affinity_format` | `:openai` | `:openai`, `:openai_nosession`, `:openrouter` |
+| `supports_strict_mode` | `false` | boolean |
 
 The vocabulary is CLOSED. An unknown key or an unknown enum value raises
 `ArgumentError` at declaration time — fail loud, never silently mistranslate.
 The two header keys drive the session-affinity headers `Client#stream` adds
 when a `session_id` is supplied.
+
+## Strict-mode tool schemas
+
+`supports_strict_mode` mirrors pi's provider detection
+(openai-completions.ts `detectCompat` :1675): OpenAI compatibility alone does
+not imply strict JSON-schema tool support, so every dialect defaults to
+`false` and opts in explicitly. The shipped `:zai` declares `true` — pi's zai
+catalog carries `supportsStrictMode: true` on the glm compat shapes. A tool
+that declares `constrained_sampling` (see [Reference: Tool](tools.md)) on a
+strict-capable dialect ships the strict rewrite of its parameters with
+`"strict": true`; every other function tool on that dialect ships
+`"strict": false` verbatim; tools on non-strict dialects carry no strict key
+ever.
 
 ## What ships
 
@@ -43,6 +57,7 @@ Dialects.declare(:zai) do
   supports_developer_role false
   supports_reasoning_effort true
   supports_store false
+  supports_strict_mode true
 end
 
 Dialects.declare(:deepseek) do

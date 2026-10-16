@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
-# BYTE-PARITY harness (Specification §12.2–§12.3; AC2). The 11 canonical
-# request bodies recorded from REAL pi (installed @earendil-works/pi-ai
-# 1.1.0 dist, driven hermetically — provenance: fixtures/wire/CAPTURE.mjs,
-# frozen digests in its header + the table below) are replayed through the
+# BYTE-PARITY harness (Specification §12.2–§12.3; AC2). The 13 canonical
+# request bodies recorded from REAL pi (11 from the installed
+# @earendil-works/pi-ai 1.1.0 dist, driven hermetically — provenance:
+# fixtures/wire/CAPTURE.mjs; plus the two I63 strict-sampling scenarios
+# from the 1.2.0 dist — fixtures/wire/CAPTURE-STRICT.mjs; frozen digests
+# in the drivers' headers + the table below) are replayed through the
 # gem's PUBLIC surface: the exact §12.3 gem-side construction runs ONE
 # request per scenario through Chat → Client → Protocol against the gem's
 # own MockLLMServer (§12.1), and the captured request body must be
@@ -47,6 +49,27 @@ class ParityReadTool < Fast::Completions::Tool
   end
 end
 
+# The §12.3 tool with an I63 constrained_sampling declaration — the
+# strict-rewrite scenario (same parameters literal as ParityReadTool; the
+# declared Hash must NOT be what reaches the wire).
+class StrictReadTool < Fast::Completions::Tool
+  description "Read file contents."
+  tool_name "read"
+  parameters(
+    "type" => "object",
+    "required" => ["path"],
+    "properties" => {
+      "path" => {"type" => "string"},
+      "offset" => {"type" => "number"},
+    },
+  )
+  constrained_sampling("type" => "json_schema", "strict" => "prefer")
+
+  def execute(path:, offset: nil)
+    "parity harness: tool not executed"
+  end
+end
+
 RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2–§12.3)" do
   FIXTURE_DIR = File.expand_path("../../fixtures/wire", __dir__)
 
@@ -64,6 +87,8 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
     "reasoning_details_replay" => "c21da08d520e246652b33bedf76d89db581692a7775de5181dc8c63013a0ae4e",
     "cross_model_thinking_replay" => "809a9b7ecc99399379031524ed5810677e31c22cac2f64eb6e728602ea5939fc",
     "budget_field" => "fb29e70650e9708f394c319d3c8ecacb840c134d214f9ce2747151356b86d1b7",
+    "zai_strict_tool" => "d7470202a2f66216b3d0381bb18d3c5c29082e5c334b7fb87c2410d65ce824a8",
+    "zai_strict_undeclared" => "fead3755e34689d502cbb865d6d424ccc84b4453d8724aa8fee713f9516a60c9",
   }.freeze
   TAGS = FROZEN_DIGESTS.keys.freeze
 
@@ -72,6 +97,27 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
   # idempotent (last declaration wins, §4).
   Fast::Completions.dialect(:budget_probe) do
     thinking_token_budget_field "thinking_token_budget"
+  end
+
+  # HARNESS-LOCAL capture-era compat (architect ruling on the I63
+  # PHASE-0-class conflict — never enters dialects.rb's shipped registry;
+  # the shipped trio stays :zai/:deepseek/:fireworks). The zai_on/zai_off
+  # fixtures are pi-ai 1.1.0 captures, from BEFORE strict emission existed
+  # on this surface: pi 1.2.0 — the generation the two I63 captures come
+  # from — emits ,"strict":false on exactly this wire (undeclared §12.3
+  # read tool, strict-capable zai compat; 501B → 516B, proof fixture
+  # zai_strict_undeclared, SHA256 fead3755e34689d502cbb865d6d424ccc84b4453
+  # d8724aa8fee713f9516a60c9). The 1.1.0 bytes are therefore reproducible
+  # only against the capture-era compat: :zai_1_1 is :zai minus
+  # supports_strict_mode (the vocabulary default false). The I63 rows use
+  # the shipped :zai.
+  Fast::Completions.dialect(:zai_1_1) do
+    thinking_format :zai
+    zai_tool_stream true
+    max_tokens_field "max_tokens"
+    supports_developer_role false
+    supports_reasoning_effort true
+    supports_store false
   end
 
   # The §12.3 scenario table, verbatim: model kwargs beyond the common
@@ -104,14 +150,14 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
       final_user: "hello",
     },
     "zai_on" => {
-      model: {reasoning: true, max_tokens: 512, dialect: :zai,
+      model: {reasoning: true, max_tokens: 512, dialect: :zai_1_1, # capture-era compat; see the :zai_1_1 declaration
               thinking_level_map: {off: "disabled", low: "low", medium: "medium", high: "high"}},
       thinking_level: :high,
       history: -> { [] },
       final_user: "hello",
     },
     "zai_off" => {
-      model: {reasoning: true, max_tokens: 512, dialect: :zai,
+      model: {reasoning: true, max_tokens: 512, dialect: :zai_1_1, # capture-era compat; see the :zai_1_1 declaration
               thinking_level_map: {off: "disabled", low: "low", medium: "medium", high: "high"}},
       thinking_level: :off,
       history: -> { [] },
@@ -197,11 +243,30 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
       history: -> { [] },
       final_user: "hello",
     },
+    # I63 strict rows (pi capture 1.2.0): the zai_on model shape; the
+    # declared-strict row uses StrictReadTool, the undeclared row the
+    # plain ParityReadTool.
+    "zai_strict_tool" => {
+      model: {reasoning: true, max_tokens: 512, dialect: :zai,
+              thinking_level_map: {off: "disabled", low: "low", medium: "medium", high: "high"}},
+      thinking_level: :high,
+      history: -> { [] },
+      final_user: "hello",
+      tool_class: StrictReadTool,
+    },
+    "zai_strict_undeclared" => {
+      model: {reasoning: true, max_tokens: 512, dialect: :zai,
+              thinking_level_map: {off: "disabled", low: "low", medium: "medium", high: "high"}},
+      thinking_level: :high,
+      history: -> { [] },
+      final_user: "hello",
+      tool_class: ParityReadTool,
+    },
   }.freeze
 
   # Fixture fidelity (the in-suite half of AC2 wire-fixtures-digests): the
   # committed bytes ARE the frozen bytes — shape, path, digest.
-  it "carries the 11 frozen fixtures: shape, request_path, digest" do
+  it "carries the 13 frozen fixtures: shape, request_path, digest" do
     TAGS.each do |tag|
       fixture = JSON.parse(File.read(File.join(FIXTURE_DIR, "#{tag}.json")))
       expect(fixture.keys).to eq(%w[tag request_path request_body])
@@ -234,7 +299,7 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
     begin
       chat = Fast::Completions::Chat.new(client: client, model: build_model(scenario))
       chat.with_instructions("You are a test assistant.")
-      chat.with_tools(ParityReadTool.new)
+      chat.with_tools((scenario[:tool_class] || ParityReadTool).new)
       chat.with_thinking_level(scenario[:thinking_level]) if scenario[:thinking_level]
       scenario[:history].call.each { |message| chat.add_message(message) }
       chat.add_message(Fast::Completions::Message.user(scenario[:final_user]))
