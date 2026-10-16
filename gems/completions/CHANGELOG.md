@@ -3,7 +3,7 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
-## Unreleased
+## 0.4.0 (2026-10-14)
 
 - Strict-sampling tool schemas (pi constrained-sampling, JSON-schema half):
   tools declare `constrained_sampling` — `false` (explicit opt-out) or
