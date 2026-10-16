@@ -3,6 +3,21 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.4.1 (2026-10-16)
+
+- Fix a mid-stream crash in the tool-call live-parse (regression against
+  pi, found live on zai/glm-5.3): when a delta boundary split an escape
+  sequence, the arguments scratch buffer ended mid-string with a lone
+  trailing backslash; `repair_json` doubled it (repaired != partial) and
+  the re-parse of the still-unterminated string raised `JSON::ParserError`
+  — uncaught, because Ruby rescue clauses do not cascade (an exception
+  raised in one rescue body is not handled by the next rescue clause of
+  the same method). The repaired re-parse now gets its own rescue (the
+  same lesson `Client#parse_repaired` already had), returning `{}` as the
+  last resort — pi's `parseStreamingJson` wraps the repair path in a
+  try/catch and always returns a valid object; the port dropped that
+  outer catch.
+
 ## 0.4.0 (2026-10-14)
 
 - Strict-sampling tool schemas (pi constrained-sampling, JSON-schema half):

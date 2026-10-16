@@ -210,14 +210,24 @@ module Fast
       end
 
       # OQ-4: control-character repair (pi utils/json-parse.ts repairJson
-      # :20-77), {} as the last resort (pi's partial-json fallback).
+      # :20-77), {} as the last resort (pi's partial-json fallback). The
+      # repaired re-parse gets its OWN method — a rescue body's exception
+      # is not caught by a later rescue clause of the same method (the
+      # 0.4.0 leak: a delta boundary splitting an escape sequence left the
+      # scratch buffer mid-string with a trailing backslash; repair "fixed"
+      # it, the re-parse raised, and the step died). pi's outer try/catch
+      # absorbs this; so do we.
       def parse_streaming_json(partial)
         return {} if partial.nil? || partial.strip.empty?
 
         JSON.parse(partial)
       rescue JSON::ParserError
         repaired = repair_json(partial)
-        repaired == partial ? {} : JSON.parse(repaired)
+        repaired == partial ? {} : parse_repaired_json(repaired)
+      end
+
+      def parse_repaired_json(repaired)
+        JSON.parse(repaired)
       rescue JSON::ParserError
         {}
       end
