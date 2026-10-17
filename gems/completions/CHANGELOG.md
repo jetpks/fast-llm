@@ -3,6 +3,31 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.4.1 (2026-10-16)
+
+- Fix a mid-stream crash in the tool-call live-parse (regression against
+  pi, found live on zai/glm-5.3): when a delta boundary split an escape
+  sequence, the arguments scratch buffer ended mid-string with a lone
+  trailing backslash; `repair_json` doubled it (repaired != partial) and
+  the re-parse of the still-unterminated string raised `JSON::ParserError`
+  — uncaught, because Ruby rescue clauses do not cascade (an exception
+  raised in one rescue body is not handled by the next rescue clause of
+  the same method). The repaired re-parse now gets its own rescue (the
+  same lesson `Client#parse_repaired` already had), returning `{}` as the
+  last resort — pi's `parseStreamingJson` wraps the repair path in a
+  try/catch and always returns a valid object; the port dropped that
+  outer catch.
+- Bench harness (perf-baseline): `gems/completions/bench/` ships four
+  deterministic, network-free, stdlib-only benchmark scripts over the hot
+  paths (text-heavy SSE+protocol stream; tool-args-heavy stream through the
+  O(n²) per-delta live re-parse; Codec normalize → to_wire round-trip;
+  strict-schema rewrite) and compare_refs.rb, which measures v0.2.0 →
+  v0.3.0 → v0.4.0 → 0.4.1 through temporary read-only worktrees and writes
+  bench/BASELINE.md — per-path × ref medians, consecutive-release deltas,
+  and per-pair verdicts against frozen per-op floors. No behavior changes;
+  the capture is single-machine, and future runs compare against the
+  floors, never the cells.
+
 ## 0.4.0 (2026-10-14)
 
 - Strict-sampling tool schemas (pi constrained-sampling, JSON-schema half):
