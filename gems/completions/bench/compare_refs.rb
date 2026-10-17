@@ -3,11 +3,17 @@
 
 # Multi-ref performance comparison driver (perf-baseline). Runs the
 # committed bench scripts against the gem lib at each release ref —
-# v0.2.0 → v0.3.0 → v0.4.0 → 0.4.1 — through temporary READ-ONLY
+# v0.2.0 → v0.3.0 → v0.4.0 → 0.4.1 → 0.5.0 — through temporary READ-ONLY
 # worktrees under the space's tmp/ (tags are never moved, rewritten,
 # or re-pointed; the worktrees are torn down afterward), prints one
 # attribution table with per-pair deltas and floor verdicts, and
 # writes bench/BASELINE.md next to this script.
+#
+# 0.5.0 is "HEAD" — the WORKING TREE this script runs from: the lane
+# tip, whose uncommitted machine IS the release under measurement (a
+# worktree at HEAD's sha would measure the pre-machine code; at
+# integrate time the landing commit becomes that sha). The four
+# historical refs keep the worktree discipline.
 #
 # FINDINGS DISCIPLINE: a pair whose NEWER ref exceeds its frozen floor
 # is a FINDING (printed, counted, carried in BASELINE.md) — never a
@@ -23,26 +29,33 @@ REPO = File.expand_path("../..", __dir__) # gems/completions/bench → repo root
 
 # [label, git rev]. 0.4.1 is the local-only SHA ce19841 (BRIEF §4) —
 # origin/main sits at v0.4.0; the label is the release name only.
+# 0.5.0 is "HEAD": the working tree (see the header note).
 REFS = [
   ["v0.2.0", "v0.2.0"],
   ["v0.3.0", "v0.3.0"],
   ["v0.4.0", "v0.4.0"],
   ["0.4.1", "ce19841"],
+  ["0.5.0", "HEAD"],
 ].freeze
 
 # Declared per-script ref applicability: a script runs ONLY at refs
 # whose lib carries every seam it touches (bench_strict needs the
 # 0.4.0 constrained-sampling engine; the other three use seams present
-# since v0.2.0). Inapplicable cells are n/a in the table, never an
-# error.
+# since v0.2.0 — and, at 0.5.0, the incremental args machine).
+# Inapplicable cells are n/a in the table, never an error.
 APPLICABILITY = {
-  "bench_text_stream" => %w[v0.2.0 v0.3.0 v0.4.0 0.4.1],
-  "bench_tool_args" => %w[v0.2.0 v0.3.0 v0.4.0 0.4.1],
-  "bench_codec" => %w[v0.2.0 v0.3.0 v0.4.0 0.4.1],
-  "bench_strict" => %w[v0.4.0 0.4.1],
+  "bench_text_stream" => %w[v0.2.0 v0.3.0 v0.4.0 0.4.1 0.5.0],
+  "bench_tool_args" => %w[v0.2.0 v0.3.0 v0.4.0 0.4.1 0.5.0],
+  "bench_codec" => %w[v0.2.0 v0.3.0 v0.4.0 0.4.1 0.5.0],
+  "bench_strict" => %w[v0.4.0 0.4.1 0.5.0],
 }.freeze
 
-PAIRS = [["v0.2.0", "v0.3.0"], ["v0.3.0", "v0.4.0"], ["v0.4.0", "0.4.1"]].freeze
+PAIRS = [
+  ["v0.2.0", "v0.3.0"],
+  ["v0.3.0", "v0.4.0"],
+  ["v0.4.0", "0.4.1"],
+  ["0.4.1", "0.5.0"],
+].freeze
 
 # FROZEN FLOORS (iteration Specification; do not tune in-lane): absolute
 # per-op ceilings, generous to single-machine noise. The client is
@@ -57,6 +70,20 @@ FLOORS = {
   "codec" => {unit: "ms/round_trip", max: 1.5},
   "strict" => {unit: "us/rewrite", max: 100.0},
 }.freeze
+
+# Pair-scoped floor override (I02): the machine's own bar. tool_args on
+# the 0.4.1→0.5.0 pair is gated at 60 µs/delta — 5× headroom over the
+# spec-side calibration prototype's ~12 µs median, and tight enough
+# that any per-delta full-buffer walk of the 24 KB workload (>100 µs)
+# mechanically FINDS; the floor IS the O(n) gate. Every other path/pair
+# keeps its I01 default above.
+MACHINE_FLOOR = {path: "tool_args", pair: ["0.4.1", "0.5.0"], max: 60.0}.freeze
+
+def floor_for(path, pair)
+  return MACHINE_FLOOR[:max] if path == MACHINE_FLOOR[:path] && pair == MACHINE_FLOOR[:pair]
+
+  FLOORS[path][:max]
+end
 
 MACHINE_NOTE = ENV.fetch("BENCH_MACHINE_NOTE",
   "single-machine wall-clock medians; shared developer laptop, no isolation")
@@ -104,9 +131,14 @@ def prepare_worktree(path, sha)
   git("worktree", "add", "--detach", path, sha)
 end
 
-def run_script(label, script, worktree)
+def run_script(label, script, lib_dir)
+  # The -I must point at the intended lib: a bogus path would silently
+  # fall through to whatever else provides fast/completions (an
+  # installed gem) and measure the WRONG code.
+  abort "lib dir missing for #{label}: #{lib_dir}" unless File.directory?(lib_dir)
+
   out, status = Open3.capture2e({},
-    RbConfig.ruby, "-I", File.join(worktree, "gems", "completions", "lib"),
+    RbConfig.ruby, "-I", lib_dir,
     File.join(BENCH_DIR, "#{script}.rb"))
   unless status.success?
     abort "#{script} FAILED at #{label} (an applicable ref — this is an " \
@@ -133,16 +165,26 @@ abort "FLOORS keys must match APPLICABILITY scripts" unless paths.to_set == scri
 
 shas = REFS.to_h { |label, rev| [label, resolve_rev(rev)] }
 root = worktree_root
-worktrees = REFS.to_h { |label, _| [label, File.join(root, "bench-#{label}")] }
+worktrees = REFS.each_with_object({}) do |(label, rev), hash|
+  hash[label] = File.join(root, "bench-#{label}") unless rev == "HEAD"
+end
 
 results = {} # [script, label] => measurement
 begin
-  REFS.each do |label, _rev|
-    prepare_worktree(worktrees[label], shas[label])
+  REFS.each do |label, rev|
+    lib_dir =
+      if rev == "HEAD"
+        # 0.5.0 is the working tree this driver runs from — the lane
+        # tip's own lib, no worktree (see the header note).
+        File.join(BENCH_DIR, "..", "lib")
+      else
+        prepare_worktree(worktrees[label], shas[label])
+        File.join(worktrees[label], "gems", "completions", "lib")
+      end
     APPLICABILITY.each do |script, labels|
       next unless labels.include?(label)
 
-      results[[script, label]] = run_script(label, script, worktrees[label])
+      results[[script, label]] = run_script(label, script, lib_dir)
     end
   end
 ensure
@@ -161,7 +203,7 @@ machine_note = `uname -srm`.strip
 stamp = Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 lines = []
-lines << "# fast-completions perf baseline — hardening arc v0.2.0 → 0.4.1"
+lines << "# fast-completions perf baseline — hardening arc v0.2.0 → 0.5.0"
 lines << ""
 lines << "Captured #{stamp} by `gems/completions/bench/compare_refs.rb` (frozen floors " \
           "and workload sizes live in that script; the numbers below are a single-machine " \
@@ -171,12 +213,12 @@ lines << ""
 lines << "- ruby: `#{ruby_note}`"
 lines << "- machine: `#{machine_note}` — #{MACHINE_NOTE}"
 lines << "- refs: " + REFS.map { |label, _| "#{label} = #{shas[label][0, 7]}" }.join(", ") +
-          " (0.4.1 is the local-only SHA, BRIEF §4)"
+          " (0.4.1 is the local-only SHA, BRIEF §4; 0.5.0 is the working tree at HEAD — the pre-landing lane tip)"
 lines << ""
 lines << "## Per-path × ref (median of the script's reps)"
 lines << ""
-lines << "| path | v0.2.0 | v0.3.0 | v0.4.0 | 0.4.1 | floor |"
-lines << "|---|---|---|---|---|---|"
+lines << "| path | v0.2.0 | v0.3.0 | v0.4.0 | 0.4.1 | 0.5.0 | floor |"
+lines << "|---|---|---|---|---|---|---|"
 paths.each do |path|
   script = "bench_#{path}"
   row = ["| #{script} |"] + REFS.map { |label, _| " #{cell(results, script, label)} |" }
@@ -201,6 +243,9 @@ lines << ""
 FLOORS.each do |path, floor|
   lines << "FLOOR path=#{path} unit=#{floor[:unit]} max=#{format("%g", floor[:max])}"
 end
+# The machine's own, pair-scoped bar (I02) — beside the defaults above.
+lines << "FLOOR path=#{MACHINE_FLOOR[:path]} pair=#{MACHINE_FLOOR[:pair][0]}->#{MACHINE_FLOOR[:pair][1]} " \
+          "unit=#{FLOORS[MACHINE_FLOOR[:path]][:unit]} max=#{format("%g", MACHINE_FLOOR[:max])}"
 pairs_checked = 0
 findings = 0
 verdicts = []
@@ -211,10 +256,11 @@ paths.each do |path|
     next if newer_value.nil?
 
     pairs_checked += 1
-    status = newer_value[:value] <= FLOORS[path][:max] ? "OK" : "FINDING"
+    floor = floor_for(path, [older, newer])
+    status = newer_value[:value] <= floor ? "OK" : "FINDING"
     findings += 1 if status == "FINDING"
     verdicts << format("VERDICT path=%s pair=%s->%s newer=%g floor=%g unit=%s status=%s",
-      path, older, newer, newer_value[:value], FLOORS[path][:max], FLOORS[path][:unit], status)
+      path, older, newer, newer_value[:value], floor, FLOORS[path][:unit], status)
   end
 end
 lines.concat(verdicts)
