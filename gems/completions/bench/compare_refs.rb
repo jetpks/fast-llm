@@ -242,20 +242,17 @@ end
 lines << ""
 lines << "## Floor verdicts (absolute per-op ceilings)"
 lines << ""
-lines << "Every pair's newer cell must sit at or under its floor. One pair " \
-          "carries a stricter, pair-scoped bar: 0.4.1→0.5.0 tool_args (the " \
-          "machine's own 60 µs/delta gate from I02). `headroom` = " \
-          "(floor − value) / floor; rows sort tightest first, so any FINDING " \
-          "and the riskiest margins sit at the top."
-lines << ""
-lines << "| path | pair | value | floor | unit | headroom | status |"
-lines << "|---|---|---|---|---|---|---|"
+lines << "One table per consecutive-release pair; within each, rows sort " \
+          "tightest first, so any FINDING and the riskiest margins sit at " \
+          "the top. All pairs share the per-path floors except 0.4.1→0.5.0 " \
+          "tool_args, which carries the machine's own stricter 60 µs/delta " \
+          "gate from I02 (flagged inline). `headroom` = (floor − value) / floor."
 pairs_checked = 0
 findings = 0
-rows = []
-paths.each do |path|
-  script = "bench_#{path}"
-  PAIRS.each do |older, newer|
+PAIRS.each do |older, newer|
+  pair_rows = []
+  paths.each do |path|
+    script = "bench_#{path}"
     newer_value = results[[script, newer]]
     next if newer_value.nil?
 
@@ -264,9 +261,9 @@ paths.each do |path|
     machine_pair = path == MACHINE_FLOOR[:path] && [older, newer] == MACHINE_FLOOR[:pair]
     status = newer_value[:value] <= floor ? "OK" : "FINDING"
     findings += 1 if status == "FINDING"
-    rows << {
+    pair_rows << {
       path: path,
-      pair: "#{older}→#{newer}#{machine_pair ? " (machine bar)" : ""}",
+      machine_bar: machine_pair,
       value: newer_value[:value],
       floor: floor,
       unit: FLOORS[path][:unit],
@@ -274,11 +271,19 @@ paths.each do |path|
       status: status,
     }
   end
-end
-rows.sort_by! { |row| [row[:status] == "FINDING" ? 0 : 1, row[:headroom]] }
-rows.each do |row|
-  lines << format("| %s | %s | %g | %g | %s | %+.0f%% | %s |",
-    row[:path], row[:pair], row[:value], row[:floor], row[:unit], row[:headroom], row[:status])
+  next if pair_rows.empty?
+
+  lines << ""
+  lines << "### #{older} → #{newer}"
+  lines << ""
+  lines << "| path | value | floor | unit | headroom | status |"
+  lines << "|---|---|---|---|---|---|"
+  pair_rows.sort_by! { |row| [row[:status] == "FINDING" ? 0 : 1, row[:headroom]] }
+  pair_rows.each do |row|
+    lines << format("| %s%s | %g | %g | %s | %+.0f%% | %s |",
+      row[:path], row[:machine_bar] ? " (machine bar)" : "", row[:value], row[:floor],
+      row[:unit], row[:headroom], row[:status])
+  end
 end
 lines << ""
 # Machine trailer — the driver's exit contract (the judge greps this line).
