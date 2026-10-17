@@ -17,6 +17,16 @@ one section per released version, newest first.
   last resort — pi's `parseStreamingJson` wraps the repair path in a
   try/catch and always returns a valid object; the port dropped that
   outer catch.
+- Bench harness (perf-baseline): `gems/completions/bench/` ships four
+  deterministic, network-free, stdlib-only benchmark scripts over the hot
+  paths (text-heavy SSE+protocol stream; tool-args-heavy stream through the
+  O(n²) per-delta live re-parse; Codec normalize → to_wire round-trip;
+  strict-schema rewrite) and compare_refs.rb, which measures v0.2.0 →
+  v0.3.0 → v0.4.0 → 0.4.1 through temporary read-only worktrees and writes
+  bench/BASELINE.md — per-path × ref medians, consecutive-release deltas,
+  and per-pair verdicts against frozen per-op floors. No behavior changes;
+  the capture is single-machine, and future runs compare against the
+  floors, never the cells.
 
 ## 0.4.0 (2026-10-14)
 
