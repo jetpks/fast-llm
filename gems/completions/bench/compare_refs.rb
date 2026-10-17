@@ -242,11 +242,13 @@ end
 lines << ""
 lines << "## Floor verdicts (absolute per-op ceilings)"
 lines << ""
-lines << "One table per consecutive-release pair; within each, rows sort " \
-          "tightest first, so any FINDING and the riskiest margins sit at " \
-          "the top. All pairs share the per-path floors except 0.4.1→0.5.0 " \
-          "tool_args, which carries the machine's own stricter 60 µs/delta " \
-          "gate from I02 (flagged inline). `headroom` = (floor − value) / floor."
+lines << "One table per consecutive-release pair, rows in the canonical " \
+          "path order (same as every other table in this file). All pairs " \
+          "share the per-path floors except 0.4.1→0.5.0 tool_args, which " \
+          "carries the machine's own stricter 60 µs/delta gate from I02 " \
+          "(flagged inline). `headroom` = (floor − value) / floor; a value " \
+          "over the floor is a FINDING — also counted in the trailer and " \
+          "the driver's exit code."
 pairs_checked = 0
 findings = 0
 PAIRS.each do |older, newer|
@@ -278,7 +280,6 @@ PAIRS.each do |older, newer|
   lines << ""
   lines << "| path | value | floor | unit | headroom | status |"
   lines << "|---|---|---|---|---|---|"
-  pair_rows.sort_by! { |row| [row[:status] == "FINDING" ? 0 : 1, row[:headroom]] }
   pair_rows.each do |row|
     lines << format("| %s%s | %g | %g | %s | %+.0f%% | %s |",
       row[:path], row[:machine_bar] ? " (machine bar)" : "", row[:value], row[:floor],
