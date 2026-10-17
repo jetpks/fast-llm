@@ -417,6 +417,24 @@ RSpec.describe Fast::Completions::Protocol do
       expect(block[:arguments]).to eq({"path" => "line1\r\nline\t2"})
     end
 
+    it "a delta boundary splitting an escape sequence stays best-effort (0.4.0 leak: the repaired re-parse raised)" do
+      acc = accumulator
+      # Buffer ends mid-string with a LONE trailing backslash: the split
+      # `\n` escape. repair_json doubles it (repaired != partial) and the
+      # re-parse of the still-unterminated string raised JSON::ParserError
+      # out of parse_streaming_json — killing the step mid-stream.
+      expect {
+        acc.consume(chunk({"tool_calls" => [
+          {"index" => 0, "id" => "c1", "function" => {"name" => "t", "arguments" => '{"path":"li\\'}},
+        ]}))
+      }.not_to raise_error
+      expect(acc.partial.content.first[:arguments]).to eq({}) # still truncated → {}
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "function" => {"arguments" => 'ne1"}'}},
+      ]}))
+      expect(acc.partial.content.first[:arguments]).to eq({"path" => "li\ne1"})
+    end
+
     it "reasoning_details deltas accumulate with consecutive merge and serialize at finalize (pi :334-341, :664-677)" do
       acc = accumulator
       details = [
