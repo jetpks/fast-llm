@@ -228,27 +228,31 @@ end
 lines << ""
 lines << "## Consecutive-release deltas (newer vs older, same units)"
 lines << ""
-PAIRS.each do |older, newer|
-  paths.each do |path|
-    script = "bench_#{path}"
+lines << ["| path |", *PAIRS.map { |older, newer| " #{older}→#{newer} |" }].join
+lines << "|---|" + "---|" * PAIRS.size
+paths.each do |path|
+  script = "bench_#{path}"
+  cells = PAIRS.map do |older, newer|
     a = results[[script, older]]
     b = results[[script, newer]]
-    delta = a && b ? format("%+.1f%%", (b[:value] - a[:value]) / a[:value] * 100) : "n/a"
-    lines << "- #{path} #{older}→#{newer}: #{delta}"
+    a && b ? format("%+.1f%%", (b[:value] - a[:value]) / a[:value] * 100) : "n/a"
   end
+  lines << ["| #{path} |", *cells.map { |c| " #{c} |" }].join
 end
 lines << ""
 lines << "## Floor verdicts (absolute per-op ceilings)"
 lines << ""
-FLOORS.each do |path, floor|
-  lines << "FLOOR path=#{path} unit=#{floor[:unit]} max=#{format("%g", floor[:max])}"
-end
-# The machine's own, pair-scoped bar (I02) — beside the defaults above.
-lines << "FLOOR path=#{MACHINE_FLOOR[:path]} pair=#{MACHINE_FLOOR[:pair][0]}->#{MACHINE_FLOOR[:pair][1]} " \
-          "unit=#{FLOORS[MACHINE_FLOOR[:path]][:unit]} max=#{format("%g", MACHINE_FLOOR[:max])}"
+lines << "Every pair's newer cell must sit at or under its floor. One pair " \
+          "carries a stricter, pair-scoped bar: 0.4.1→0.5.0 tool_args (the " \
+          "machine's own 60 µs/delta gate from I02). `headroom` = " \
+          "(floor − value) / floor; rows sort tightest first, so any FINDING " \
+          "and the riskiest margins sit at the top."
+lines << ""
+lines << "| path | pair | value | floor | unit | headroom | status |"
+lines << "|---|---|---|---|---|---|---|"
 pairs_checked = 0
 findings = 0
-verdicts = []
+rows = []
 paths.each do |path|
   script = "bench_#{path}"
   PAIRS.each do |older, newer|
@@ -257,13 +261,27 @@ paths.each do |path|
 
     pairs_checked += 1
     floor = floor_for(path, [older, newer])
+    machine_pair = path == MACHINE_FLOOR[:path] && [older, newer] == MACHINE_FLOOR[:pair]
     status = newer_value[:value] <= floor ? "OK" : "FINDING"
     findings += 1 if status == "FINDING"
-    verdicts << format("VERDICT path=%s pair=%s->%s newer=%g floor=%g unit=%s status=%s",
-      path, older, newer, newer_value[:value], floor, FLOORS[path][:unit], status)
+    rows << {
+      path: path,
+      pair: "#{older}→#{newer}#{machine_pair ? " (machine bar)" : ""}",
+      value: newer_value[:value],
+      floor: floor,
+      unit: FLOORS[path][:unit],
+      headroom: (floor - newer_value[:value]) / floor * 100,
+      status: status,
+    }
   end
 end
-lines.concat(verdicts)
+rows.sort_by! { |row| [row[:status] == "FINDING" ? 0 : 1, row[:headroom]] }
+rows.each do |row|
+  lines << format("| %s | %s | %g | %g | %s | %+.0f%% | %s |",
+    row[:path], row[:pair], row[:value], row[:floor], row[:unit], row[:headroom], row[:status])
+end
+lines << ""
+# Machine trailer — the driver's exit contract (the judge greps this line).
 lines << format("PAIRS_CHECKED=%d FINDINGS=%d", pairs_checked, findings)
 
 table = lines.join("\n") + "\n"
