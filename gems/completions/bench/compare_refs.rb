@@ -71,17 +71,15 @@ FLOORS = {
   "strict" => {unit: "us/rewrite", max: 100.0},
 }.freeze
 
-# Pair-scoped floor override (I02): the machine's own bar. tool_args on
-# the 0.4.1→0.5.0 pair is gated at 60 µs/delta — 5× headroom over the
-# spec-side calibration prototype's ~12 µs median, and tight enough
-# that any per-delta full-buffer walk of the 24 KB workload (>100 µs)
-# mechanically FINDS; the floor IS the O(n) gate. Every other path/pair
-# keeps its I01 default above.
-MACHINE_FLOOR = {path: "tool_args", pair: ["0.4.1", "0.5.0"], max: 60.0}.freeze
+# Pair-scoped floor override retired 2026-10-17 (operator ruling): I02's
+# 60 µs/delta machine bar served its purpose as the iteration's frozen
+# gate (verified and landed); the live report now judges every cell on
+# the same uniform FLOORS — the machine's win stands on the shared
+# scale (5.7 µs against the same 2500 µs ceiling the eager re-parse
+# faced), not on its own stricter exam. The frozen AC history stays in
+# the I02 iteration file.
 
-def floor_for(path, pair)
-  return MACHINE_FLOOR[:max] if path == MACHINE_FLOOR[:path] && pair == MACHINE_FLOOR[:pair]
-
+def floor_for(path, _pair)
   FLOORS[path][:max]
 end
 
@@ -243,12 +241,10 @@ lines << ""
 lines << "## Floor verdicts (absolute per-op ceilings)"
 lines << ""
 lines << "One table per consecutive-release pair, rows in the canonical " \
-          "path order (same as every other table in this file). All pairs " \
-          "share the per-path floors except 0.4.1→0.5.0 tool_args, which " \
-          "carries the machine's own stricter 60 µs/delta gate from I02 " \
-          "(flagged inline). `headroom` = (floor − value) / floor; a value " \
-          "over the floor is a FINDING — also counted in the trailer and " \
-          "the driver's exit code."
+          "path order (same as every other table in this file). Every cell " \
+          "is judged on the same uniform per-path floors. `headroom` = " \
+          "(floor − value) / floor; a value over the floor is a FINDING — " \
+          "also counted in the trailer and the driver's exit code."
 pairs_checked = 0
 findings = 0
 PAIRS.each do |older, newer|
@@ -260,12 +256,10 @@ PAIRS.each do |older, newer|
 
     pairs_checked += 1
     floor = floor_for(path, [older, newer])
-    machine_pair = path == MACHINE_FLOOR[:path] && [older, newer] == MACHINE_FLOOR[:pair]
     status = newer_value[:value] <= floor ? "OK" : "FINDING"
     findings += 1 if status == "FINDING"
     pair_rows << {
       path: path,
-      machine_bar: machine_pair,
       value: newer_value[:value],
       floor: floor,
       unit: FLOORS[path][:unit],
@@ -281,9 +275,8 @@ PAIRS.each do |older, newer|
   lines << "| path | value | floor | unit | headroom | status |"
   lines << "|---|---|---|---|---|---|"
   pair_rows.each do |row|
-    lines << format("| %s%s | %g | %g | %s | %+.0f%% | %s |",
-      row[:path], row[:machine_bar] ? " (machine bar)" : "", row[:value], row[:floor],
-      row[:unit], row[:headroom], row[:status])
+    lines << format("| %s | %g | %g | %s | %+.0f%% | %s |",
+      row[:path], row[:value], row[:floor], row[:unit], row[:headroom], row[:status])
   end
 end
 lines << ""
