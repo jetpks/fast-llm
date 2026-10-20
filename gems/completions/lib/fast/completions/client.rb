@@ -55,10 +55,29 @@ module Fast
         Errno::ENETUNREACH, Errno::ETIMEDOUT, EOFError, IOError, SocketError,
       ].freeze
 
+      # The five Telemetry::Sink hooks a registered sink must respond to
+      # (I01). Checked ONCE at construction — the only sanctioned
+      # respond_to? use; notification-time dispatch never reflects.
+      TELEMETRY_HOOKS = %i[
+        on_completion_start on_completion_ttfb on_event on_completion_end on_completion_error
+      ].freeze
+
       attr_reader :timeout, :max_retries, :dropped_chunks
 
-      def initialize(base_url:, api_key:, timeout: DEFAULT_TIMEOUT, max_retries: DEFAULT_MAX_RETRIES)
+      def initialize(base_url:, api_key:, timeout: DEFAULT_TIMEOUT, max_retries: DEFAULT_MAX_RETRIES,
+        telemetry: [])
         raise ArgumentError, "max_retries must be an Integer >= 0" unless max_retries.is_a?(Integer) && max_retries >= 0
+        unless telemetry.is_a?(Array)
+          raise ArgumentError, "telemetry must be an Array of sink objects, got #{telemetry.class}"
+        end
+
+        telemetry.each do |sink|
+          missing = TELEMETRY_HOOKS.reject { |hook| sink.respond_to?(hook) }
+          next if missing.empty?
+
+          raise ArgumentError,
+            "telemetry sink #{sink.inspect} does not respond to #{missing.join(", ")} (Telemetry::Sink hooks)"
+        end
 
         @endpoint = Async::HTTP::Endpoint.parse(base_url)
         @api_key = api_key
@@ -66,6 +85,12 @@ module Fast
         @max_retries = max_retries
         @client = Async::HTTP::Client.new(@endpoint)
         @path = @endpoint.path.chomp("/") + "/chat/completions"
+        # I01: the client's own frozen copy (the caller's array is never
+        # frozen or mutated) + the precomputed emptiness check every
+        # call site short-circuits on — zero allocation, zero added
+        # clock reads when no sink is registered.
+        @telemetry = telemetry.dup.freeze
+        @telemetry_active = !@telemetry.empty?
       end
 
       def close
@@ -98,6 +123,18 @@ module Fast
         body = JSON.generate(request)
         accumulator = Protocol::StreamAccumulator.new(model, model.dialect)
 
+        # I01 §1: completion start — the completion clock (every duration
+        # below is a flonum difference from it) and on_completion_start,
+        # before create_response's FIRST POST of the FIRST attempt. The
+        # args are existing refs/immediates: the Model#id String ref and
+        # the request body's bytesize Integer. Guarded: with no sink,
+        # zero clock reads are added (gate 3).
+        if @telemetry_active
+          @telemetry_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          @telemetry_ttfb_fired = false
+          @telemetry.each { |sink| sink.on_completion_start(model.id, body.bytesize) }
+        end
+
         watchdog = Watchdog.new(Async::Task.current, @timeout)
         response = nil
         begin
@@ -105,15 +142,30 @@ module Fast
           # bounded-retried on pi's trigger set; every final creation
           # failure raises its mapped error from in there.
           response = create_response(headers, body, watchdog)
-          yield accumulator.start_event if block # :start precedes every block event (§10.6)
+          if block || @telemetry_active # I01 §4: sinks see :start even blockless
+            start_event = accumulator.start_event
+            notify_event(start_event) # the sink first, then its consumer twin
+            yield start_event if block
+          end
           feed_stream(response, accumulator, watchdog, &block)
         rescue Async::Cancel
-          watchdog.fired ? raise(TimeoutError, "no data within #{@timeout}s") : raise(CancelledError, "stream cancelled")
+          # Cancel never salvages (AC3); I01 §7 closes the record at the
+          # raise either way — a fired watchdog is TimeoutError, a user
+          # cancel CancelledError (no terminal Event, but the sink's
+          # record closes with on_completion_error).
+          if watchdog.fired
+            notify_error(:timeout_error)
+            raise(TimeoutError, "no data within #{@timeout}s")
+          end
+          notify_error(:cancelled_error)
+          raise(CancelledError, "stream cancelled")
         rescue *NETWORK_ERRORS => e
           salvage(accumulator, &block) # the :error terminal carries the partial BEFORE the raise (§1)
+          notify_error(:connection_error) # I01 §7: the symbol of the ConnectionError about to raise
           raise ConnectionError, "#{e.class}: #{e.message}"
-        rescue StandardError
+        rescue StandardError => e
           salvage(accumulator, &block) # pi's catch-all: any other streaming failure — same terminal, raised unchanged
+          notify_error(telemetry_symbol_for(e)) # I01 §7: derived from the re-raised class
           raise
         ensure
           # Complete bodies return the connection to the pool; an aborted
@@ -126,7 +178,10 @@ module Fast
           end
           watchdog.stop
         end
-        raise TimeoutError, "no data within #{@timeout}s" if watchdog.fired
+        if watchdog.fired
+          notify_error(:timeout_error) # I01 §7: the post-ensure watchdog raise
+          raise TimeoutError, "no data within #{@timeout}s"
+        end
 
         deliver_terminal(accumulator, &block)
       end
@@ -162,13 +217,29 @@ module Fast
         response.body.each do |chunk|
           watchdog.arm # re-arm the inactivity read-timeout per chunk (D5)
           parser.push(chunk).each do |item|
+            # I01 §3: TTFB at the FIRST item the parser yields for the
+            # successful attempt — before the on_event dispatches
+            # derived from this item; the per-attempt POST clock
+            # restarted at every retry (create_response). Comments and
+            # keepalives never yield items (sse.rb drops them
+            # structurally). A flonum difference — no heap.
+            if @telemetry_active && !@telemetry_ttfb_fired
+              @telemetry_ttfb_fired = true
+              elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @telemetry_post_started_at
+              @telemetry.each { |sink| sink.on_completion_ttfb(elapsed) }
+            end
             next if item == SSE::DONE # terminal token; no payload
 
             json = parse_chunk(item)
             next if json.nil? # dropped (I61): counted, the stream continues
 
             events = accumulator.consume(json)
-            events.each { |event| yield event } if block
+            if block || @telemetry_active # I01 §3: sinks see events even blockless
+              events.each do |event|
+                notify_event(event) # the sink first, then its consumer twin
+                yield event if block
+              end
+            end
           end
         end
       end
@@ -198,14 +269,54 @@ module Fast
       # stop and a missing finish both emit :error FIRST, then raise
       # StreamError; otherwise :done with the mapped reason. Cancel never
       # reaches here — it unwinds mid-read with NO terminal event (AC3).
+      # I01 §5: every terminal dispatch reaches the sinks (blockless
+      # included), on_completion_error rides the StreamError raise, and
+      # on_completion_end fires after the :done dispatches — before the
+      # return. This method runs OUTSIDE the rescue ladder, so the frozen
+      # terminal invariant's "including when the consumer block raises"
+      # clause is carried by the yield guards below: a consumer raise at
+      # any terminal yield closes the record with on_completion_error
+      # (the raiser's symbol) before the unchanged re-raise — on
+      # StandardError, the ladder's own catch scope, so cancel and
+      # Exception-class raises keep their today escape semantics.
       def deliver_terminal(accumulator, &block)
         events, outcome = accumulator.finish
-        events.each { |event| yield event } if block
+        if block || @telemetry_active
+          events.each do |event|
+            notify_event(event) # the sink first, then its consumer twin
+            begin
+              yield event if block
+            rescue StandardError => e
+              notify_error(telemetry_symbol_for(e))
+              raise
+            end
+          end
+        end
         if outcome[0] == :stream_error
-          yield Event.new(type: :error, reason: :error, message: accumulator.partial) if block
+          if block || @telemetry_active
+            error_event = Event.new(type: :error, reason: :error, message: accumulator.partial)
+            notify_event(error_event)
+            begin
+              yield error_event if block
+            rescue StandardError => e
+              notify_error(telemetry_symbol_for(e))
+              raise
+            end
+          end
+          notify_error(:stream_error) # the symbol of the StreamError about to raise
           raise StreamError.new(outcome[1], stop_reason: :error)
         end
-        yield Event.new(type: :done, reason: outcome[1], message: accumulator.partial) if block
+        if block || @telemetry_active
+          done_event = Event.new(type: :done, reason: outcome[1], message: accumulator.partial)
+          notify_event(done_event)
+          begin
+            yield done_event if block
+          rescue StandardError => e
+            notify_error(telemetry_symbol_for(e))
+            raise
+          end
+        end
+        notify_end(outcome[1], accumulator.partial) # after the :done dispatches, before returning
         accumulator.partial
       end
 
@@ -226,6 +337,12 @@ module Fast
         remaining = @max_retries
         loop do
           watchdog.arm # re-armed per attempt: a retried TTFB deadline restarts (D5)
+          # I01 §2: the per-attempt POST clock for TTFB — restarted at
+          # every retry; guarded so the no-sink path adds zero clock
+          # reads (gate 3).
+          if @telemetry_active
+            @telemetry_post_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          end
           begin
             response = @client.post(@path, headers: headers, body: body)
           rescue Async::Cancel
@@ -281,10 +398,26 @@ module Fast
       # the signature, tool arguments finalized — whose end events we
       # discard here, so a salvaged partial replays like a completed one's.
       def salvage(accumulator)
-        return unless block_given?
+        # I01 §6: the :error terminal reaches the sinks even blockless;
+        # with NO sinks AND no block the early return keeps today's
+        # behavior byte-identical.
+        return if !block_given? && !@telemetry_active
 
         accumulator.finish
-        yield Event.new(type: :error, reason: :error, message: accumulator.partial)
+        error_event = Event.new(type: :error, reason: :error, message: accumulator.partial)
+        notify_event(error_event) # the sink first, then its consumer twin
+        # The frozen terminal invariant: salvage runs INSIDE a rescue arm,
+        # and a raise inside a rescue body is not offered to the sibling
+        # arms — a consumer raise on this :error event would escape the
+        # ladder entirely, so the yield guard closes the record here
+        # (the raiser's symbol) before the unchanged re-raise. No-op
+        # unless sinks are registered.
+        begin
+          yield error_event if block_given?
+        rescue StandardError => e
+          notify_error(telemetry_symbol_for(e))
+          raise
+        end
       end
 
       # Complete bodies return the connection to the pool; an aborted read
@@ -302,6 +435,49 @@ module Fast
       def raise_api_error(response)
         body = response.body.read
         raise Errors.class_for_status(response.status, body).new(status: response.status, body: body)
+      end
+
+      # ── I01 telemetry dispatch ─────────────────────────────────────
+      # Every helper short-circuits on the precomputed emptiness check
+      # BEFORE any clock read or dispatch: with no sink registered the
+      # call sites cost one no-op method call, zero allocations, zero
+      # Process.clock_gettime reads. Durations are flonum differences
+      # off the completion-start clock; dispatch is in registration
+      # order; the loop block itself is never materialized, so a no-op
+      # sink adds zero heap objects (gate 2).
+
+      def notify_event(event)
+        return unless @telemetry_active
+
+        @telemetry.each { |sink| sink.on_event(event) }
+      end
+
+      def notify_end(stop_reason, message)
+        return unless @telemetry_active
+
+        duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @telemetry_started_at
+        @telemetry.each { |sink| sink.on_completion_end(stop_reason, duration, message) }
+      end
+
+      def notify_error(error)
+        return unless @telemetry_active
+
+        duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @telemetry_started_at
+        @telemetry.each { |sink| sink.on_completion_error(error, duration) }
+      end
+
+      # The re-raise arm's error Symbol: derived from the raising class —
+      # demodulized, underscored (RateLimitError → :rate_limit_error,
+      # RuntimeError → :runtime_error). Computed only on the raise path,
+      # under the active guard; an anonymous class has no name.
+      def telemetry_symbol_for(error)
+        name = error.class.name
+        return :anonymous_error if name.nil?
+
+        name.split("::").last
+          .gsub(/([A-Z\d]+)([A-Z][a-z])/, '\1_\2')
+          .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+          .downcase.to_sym
       end
     end
   end
