@@ -402,19 +402,98 @@ RSpec.describe Fast::Completions::Protocol do
       end
     end
 
-    it "live-parses partial arguments best-effort and repairs control chars at finalize (OQ-4)" do
+    # RULING (I02, operator ruling 1 — the live view is a FEATURE): the
+    # old mid-stream {} was an artifact of the eager whole-scratch
+    # re-parse, not a contract. Amended with the split-escape example
+    # below — the ONLY two existing pins the I02 live-view contract
+    # touches; an in-flight value now grows in place.
+    it "live view: partial arguments grow in place; control chars still repair at finalize (OQ-4)" do
       acc = accumulator
       acc.consume(chunk({"tool_calls" => [
         {"index" => 0, "id" => "c1", "function" => {"name" => "t", "arguments" => "{\"path\":\"li"}},
       ]}))
       block = acc.partial.content.first
-      expect(block[:arguments]).to eq({}) # truncated → best-effort {}
+      expect(block[:arguments]).to eq({"path" => "li"}) # the in-flight value grows live
       acc.consume(chunk({"tool_calls" => [
         {"index" => 0, "function" => {"arguments" => "ne1\r\nline\t2\"}"}},
       ]}))
-      # repairJson escapes the RAW control characters for the parser; the
-      # parsed arguments carry the literal \r and \n characters back.
+      # finalize re-parses the full scratch; repairJson escapes the RAW
+      # control characters for the parser; the parsed arguments carry the
+      # literal \r and \n characters back.
       expect(block[:arguments]).to eq({"path" => "line1\r\nline\t2"})
+    end
+
+    # RULING (I02): amended with the example above (the closed amendment
+    # set — see the ruling comment there). The split-escape shape stays a
+    # pinned non-event; the completed prefix now stays live instead of
+    # collapsing to {}.
+    it "live view: a delta boundary splitting an escape sequence keeps the completed prefix (0.4.0 leak: the repaired re-parse raised)" do
+      acc = accumulator
+      # Buffer ends mid-string with a LONE trailing backslash: the split
+      # `\n` escape. v0.2.0–v0.4.0 raised here (the repaired re-parse of
+      # the still-unterminated string leaked JSON::ParserError out of
+      # parse_streaming_json — killing the step mid-stream); the machine
+      # now HOLDS the partial escape, contributing nothing until it
+      # completes or is invalidated.
+      expect {
+        acc.consume(chunk({"tool_calls" => [
+          {"index" => 0, "id" => "c1", "function" => {"name" => "t", "arguments" => '{"path":"li\\'}},
+        ]}))
+      }.not_to raise_error
+      expect(acc.partial.content.first[:arguments]).to eq({"path" => "li"}) # held escape: prefix stays live
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "function" => {"arguments" => 'ne1"}'}},
+      ]}))
+      expect(acc.partial.content.first[:arguments]).to eq({"path" => "li\ne1"})
+    end
+
+    it "live view: block[:arguments] is ONE Hash across deltas, replaced exactly once at finalize" do
+      acc = accumulator
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "id" => "c1", "function" => {"name" => "t", "arguments" => '{"pa'}},
+      ]}))
+      block = acc.partial.content.first
+      expect(block[:arguments]).to eq({}) # the key is still in flight
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "function" => {"arguments" => 'th":"a'}},
+      ]}))
+      live = block[:arguments]
+      expect(live).to eq({"path" => "a"})
+      value = live["path"]
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "function" => {"arguments" => 'b.rb"}'}},
+      ]}))
+      # the same Hash, mutated in place; the in-flight String grew under
+      # the held reference (never rebuilt, never replaced mid-stream)
+      expect(block[:arguments]).to equal(live)
+      expect(live["path"]).to equal(value)
+      expect(value).to eq("ab.rb")
+      acc.consume({"choices" => [{"delta" => {}, "finish_reason" => "tool_calls"}]})
+      acc.finish
+      # replaced EXACTLY once — at finalize, by the authoritative parse
+      expect(block[:arguments]).to eq({"path" => "ab.rb"})
+      expect(block[:arguments]).not_to equal(live)
+    end
+
+    it "live view: two interleaved blocks both grow live across shared deltas" do
+      acc = accumulator
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "id" => "c1", "function" => {"name" => "read", "arguments" => '{"x":"1'}},
+        {"index" => 1, "id" => "c2", "function" => {"name" => "write", "arguments" => '{"y":"2'}},
+      ]}))
+      first, second = acc.partial.content.select { |b| b[:type] == :tool_call }
+      expect(first[:arguments]).to eq({"x" => "1"})
+      expect(second[:arguments]).to eq({"y" => "2"})
+      acc.consume(chunk({"tool_calls" => [
+        {"index" => 0, "function" => {"arguments" => 'a"}'}},
+        {"index" => 1, "function" => {"arguments" => 'b"}'}},
+      ]}))
+      expect(first[:arguments]).to eq({"x" => "1a"})
+      expect(second[:arguments]).to eq({"y" => "2b"})
+      acc.consume({"choices" => [{"delta" => {}, "finish_reason" => "tool_calls"}]})
+      acc.finish
+      expect(first[:arguments]).to eq({"x" => "1a"})
+      expect(second[:arguments]).to eq({"y" => "2b"})
     end
 
     it "reasoning_details deltas accumulate with consecutive merge and serialize at finalize (pi :334-341, :664-677)" do

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "args_streamer"
+
 module Fast
   module Completions
     # THE BYTE CONTRACT (Specification §9): Ruby Hash insertion order +
@@ -210,14 +212,24 @@ module Fast
       end
 
       # OQ-4: control-character repair (pi utils/json-parse.ts repairJson
-      # :20-77), {} as the last resort (pi's partial-json fallback).
+      # :20-77), {} as the last resort (pi's partial-json fallback). The
+      # repaired re-parse gets its OWN method — a rescue body's exception
+      # is not caught by a later rescue clause of the same method (the
+      # 0.4.0 leak: a delta boundary splitting an escape sequence left the
+      # scratch buffer mid-string with a trailing backslash; repair "fixed"
+      # it, the re-parse raised, and the step died). pi's outer try/catch
+      # absorbs this; so do we.
       def parse_streaming_json(partial)
         return {} if partial.nil? || partial.strip.empty?
 
         JSON.parse(partial)
       rescue JSON::ParserError
         repaired = repair_json(partial)
-        repaired == partial ? {} : JSON.parse(repaired)
+        repaired == partial ? {} : parse_repaired_json(repaired)
+      end
+
+      def parse_repaired_json(repaired)
+        JSON.parse(repaired)
       rescue JSON::ParserError
         {}
       end
@@ -301,7 +313,7 @@ module Fast
           @thinking_block = nil
           @tool_by_index = {}
           @tool_by_id = {}
-          @args_scratch = {}.compare_by_identity
+          @args_streamers = {}.compare_by_identity # per-block ArgsStreamer (I02); each owns its scratch
           @streamed_details = nil # :334-341
           @has_finish_reason = false
           @stop_reason = nil
@@ -430,7 +442,7 @@ module Fast
           # its block — by index, by id, or by creation — while CARRYING an
           # index the block has never bound, binds it here. FIRST index
           # wins; one index per block, ever. Boundness is tracked
-          # accumulator-side (identity-keyed, like @args_scratch): the
+          # accumulator-side (identity-keyed, like @args_streamers): the
           # blocks ARE message content — no scratch keys on them.
           @tool_index_bound ||= {}.compare_by_identity
           if index && !@tool_index_bound.key?(block)
@@ -440,8 +452,15 @@ module Fast
 
           raw = entry.dig("function", "arguments")
           raw = "" unless raw.is_a?(String)
-          @args_scratch[block] = (@args_scratch[block] || "") + raw
-          block[:arguments] = Protocol.parse_streaming_json(@args_scratch[block]) # best-effort live parse (OQ-4)
+          # I02 (0.5.0): the incremental args machine. The old seam — a
+          # full-buffer copy plus an eager whole-scratch re-parse per delta
+          # — is gone. This is a DELIBERATE departure from pi, which
+          # re-parses per delta (openai-completions.ts :652-658): the
+          # streamer carries parser state across deltas, walks ONLY the
+          # new fragment's bytes, and grows the live view in place (the
+          # block's arguments Hash); the one authoritative whole-buffer
+          # parse still happens at finalize (finalize_blocks below).
+          (@args_streamers[block] ||= ArgsStreamer.new(block[:arguments])).consume(raw)
           events << Event.new(type: :tool_call_delta, content_index: content_index(block),
             delta: raw, partial: @partial)
           events
@@ -459,7 +478,13 @@ module Fast
               block[:signature] = JSON.generate(@streamed_details) if @streamed_details
               events << Event.new(type: :thinking_end, content_index: index, content: block[:thinking], partial: @partial)
             when :tool_call
-              raw = @args_scratch.delete(block) || ""
+              streamer = @args_streamers.delete(block)
+              raw = streamer ? streamer.scratch : "" # no-fragment blocks finalize an empty scratch
+              # Finalize is the SOLE authority (L9): one whole-buffer parse
+              # of the raw bytes — the JSON.parse fast path when the stream
+              # completed, the repair walk + {} last resort otherwise
+              # (pi :453 / utils/json-parse.ts :20-90). The live Hash the
+              # machine grew is replaced here, exactly once.
               block[:arguments] = Protocol.parse_streaming_json(raw)
               events << Event.new(type: :tool_call_end, content_index: index,
                 tool_call: {id: block[:id], name: block[:name], arguments: block[:arguments]},

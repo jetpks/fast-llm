@@ -3,7 +3,75 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
-## Unreleased
+## 0.5.0 (2026-10-17)
+
+- Tool-args streaming is now an incremental string-state machine
+  (`Fast::Completions::ArgsStreamer`, a new stdlib-only class): instead
+  of eagerly re-parsing the whole arguments scratch on every delta
+  (`JSON.parse` → `repair_json` → re-parse, O(n²) across a stream), each
+  tool-call block owns a streamer whose parser state carries ACROSS
+  deltas and only the NEW fragment's bytes are walked per delta — O(n)
+  total, no per-delta copy of any accumulated buffer, and no exception
+  on the streaming path (the machine is total on any fragment sequence;
+  malformed input freezes the live view rather than crashing the step).
+  This is a deliberate departure from pi, which re-parses per delta
+  (openai-completions.ts :652-658).
+- The live view of a tool-call block's `arguments` Hash is now a
+  first-class feature (operator ruling, plan ENTRY 1 — “watching a
+  file write is extremely nice”): the same Hash object is populated in
+  place for the whole stream, nested containers materialize at their
+  opening token, and an in-flight string value GROWS live — a consumer
+  holding the reference sees it grow — instead of the whole pair
+  vanishing until the closing quote. Escape sequences split by a delta boundary are held (the
+  0.4.0/0.4.1 crash class becomes a structural non-event); invalid
+  escape chars and invalidated `\u` runs contribute their literal text
+  (`repair_json` parity, absorbed rather than called); surrogate halves
+  never enter the live value, pairs combine; scalars materialize as raw
+  text and are replaced by Integer/Float/true/false/null when the token
+  terminates (malformed scalars keep their raw text). After the root
+  object closes — or the stream becomes unparseable — the live view
+  freezes. End states are unchanged and byte-identical to 0.4.1:
+  finalize remains the sole authority, parsing the full scratch once
+  (`parse_streaming_json`: the JSON.parse fast path when the stream
+  completed, the repair walk and `{}` as the last resort otherwise).
+  Mid-stream, the two protocol_spec pins that encoded the old
+  truncation artifact as `eq({})` are amended to the growing view —
+  the ONLY spec changes besides the machine's new unit spec.
+- Bench harness: `compare_refs.rb` now measures a fifth ref — 0.5.0,
+  the working tree at HEAD (the lane tip before the integrator's
+  landing commit) — beside the four releases, pairs 0.4.1→0.5.0, and
+  gains the machine's own pair-scoped floor: tool_args at 60 µs/delta
+  (0.4.1 measured 877.4 µs/delta on the frozen 24 KB / 320-fragment
+  workload; the machine lands in single-digit µs). BASELINE.md is
+  regenerated with the 0.5.0 column. The four bench scripts stay
+  byte-frozen — the workload the floors are calibrated to.
+
+## 0.4.1 (2026-10-16)
+
+- Fix a mid-stream crash in the tool-call live-parse (regression against
+  pi, found live on zai/glm-5.3): when a delta boundary split an escape
+  sequence, the arguments scratch buffer ended mid-string with a lone
+  trailing backslash; `repair_json` doubled it (repaired != partial) and
+  the re-parse of the still-unterminated string raised `JSON::ParserError`
+  — uncaught, because Ruby rescue clauses do not cascade (an exception
+  raised in one rescue body is not handled by the next rescue clause of
+  the same method). The repaired re-parse now gets its own rescue (the
+  same lesson `Client#parse_repaired` already had), returning `{}` as the
+  last resort — pi's `parseStreamingJson` wraps the repair path in a
+  try/catch and always returns a valid object; the port dropped that
+  outer catch.
+- Bench harness (perf-baseline): `gems/completions/bench/` ships four
+  deterministic, network-free, stdlib-only benchmark scripts over the hot
+  paths (text-heavy SSE+protocol stream; tool-args-heavy stream through the
+  O(n²) per-delta live re-parse; Codec normalize → to_wire round-trip;
+  strict-schema rewrite) and compare_refs.rb, which measures v0.2.0 →
+  v0.3.0 → v0.4.0 → 0.4.1 through temporary read-only worktrees and writes
+  bench/BASELINE.md — per-path × ref medians, consecutive-release deltas,
+  and per-pair verdicts against frozen per-op floors. No behavior changes;
+  the capture is single-machine, and future runs compare against the
+  floors, never the cells.
+
+## 0.4.0 (2026-10-14)
 
 - Strict-sampling tool schemas (pi constrained-sampling, JSON-schema half):
   tools declare `constrained_sampling` — `false` (explicit opt-out) or
