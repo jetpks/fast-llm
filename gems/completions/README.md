@@ -126,6 +126,23 @@ requests run inside the caller's reactor — the gem never creates its
 own. Cancellation (`Async::Cancel` / `Chat#cancel`) aborts the
 in-flight request, discards the connection, and raises
 `CancelledError` with no phantom terminal event.
+
+## Raw streaming
+
+`Client#raw_stream` is the low-level surface a proxy or gateway needs:
+the request body goes over the wire verbatim (a Hash is JSON-encoded
+as given, a String is sent untouched — no merging, no filtering, no
+`stream` injection), and the block receives every parsed SSE payload
+in arrival order, with the wire's terminal DONE token yielded in its
+wire position. No message accumulation, no tool interpretation, no
+stop-reason mapping; exactly one POST attempt — nothing is retried.
+The watchdog is two-deadline: `ttfb_timeout` bounds the wait for the
+response headers and `inactivity_timeout` bounds the gap between body
+chunks (re-armed after every chunk) — prefill-scale values such as
+1400 s are first-class, and an unset knob falls back to the shared
+`timeout`. The `authorization` header is sent only when `api_key` is
+present and non-empty, so a local engine needs no key. See
+[the raw-stream reference](docs/reference/raw-stream.md).
 [see the tool docs]: docs/reference/tools.md
 [see the dialect docs]: docs/reference/dialects.md
 [Dialect Docs]: docs/reference/dialects.md

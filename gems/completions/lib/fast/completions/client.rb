@@ -34,11 +34,14 @@ module Fast
         # resets with the timer: a retried attempt (I62) must not inherit
         # the previous attempt's fire, or the post-stream guard and the
         # cancel-vs-fired discipline would misread attempt 2 (D5/D8).
-        def arm
+        # The additive seconds parameter (I03) lets one watchdog arm
+        # deadlines of different lengths — raw_stream's split phases —
+        # while a bare arm keeps the constructor value (stream, unchanged).
+        def arm(seconds = @seconds)
           stop
           @fired = false
           @timer = Async do
-            sleep @seconds
+            sleep seconds
             @fired = true
             @task.cancel
           end
@@ -55,15 +58,20 @@ module Fast
         Errno::ENETUNREACH, Errno::ETIMEDOUT, EOFError, IOError, SocketError,
       ].freeze
 
-      attr_reader :timeout, :max_retries, :dropped_chunks
+      attr_reader :timeout, :max_retries, :dropped_chunks, :ttfb_timeout, :inactivity_timeout
 
-      def initialize(base_url:, api_key:, timeout: DEFAULT_TIMEOUT, max_retries: DEFAULT_MAX_RETRIES)
+      def initialize(base_url:, api_key: nil, timeout: DEFAULT_TIMEOUT, max_retries: DEFAULT_MAX_RETRIES,
+        ttfb_timeout: nil, inactivity_timeout: nil)
         raise ArgumentError, "max_retries must be an Integer >= 0" unless max_retries.is_a?(Integer) && max_retries >= 0
+        validate_deadline!(:ttfb_timeout, ttfb_timeout)
+        validate_deadline!(:inactivity_timeout, inactivity_timeout)
 
         @endpoint = Async::HTTP::Endpoint.parse(base_url)
         @api_key = api_key
         @timeout = timeout
         @max_retries = max_retries
+        @ttfb_timeout = ttfb_timeout
+        @inactivity_timeout = inactivity_timeout
         @client = Async::HTTP::Client.new(@endpoint)
         @path = @endpoint.path.chomp("/") + "/chat/completions"
       end
@@ -131,14 +139,113 @@ module Fast
         deliver_terminal(accumulator, &block)
       end
 
+      # The raw surface a proxy needs (I03, BRIEF §3): the caller's
+      # request body forwarded VERBATIM (a String as-is, anything else
+      # JSON.generate'd — no merging, no filtering, no stream
+      # injection, no Model/dialect involvement, no session-affinity
+      # headers), every parsed SSE data payload yielded to the block in
+      # arrival order — the SSE::DONE sentinel in its wire position —
+      # and nil returned: the block is the only output channel. No
+      # Message accumulation, no tool interpretation, no stop-reason
+      # mapping, no salvage, no StreamError — a stream that ends without
+      # the terminal token simply ends. Exactly ONE POST attempt: no
+      # create_response, no retry logic, no x-should-retry consultation;
+      # a non-2xx raises the existing §8 mapping (raise_api_error).
+      #
+      # Watchdog, split by I03: two deadlines. TTFB (status + headers)
+      # arms before the POST; from response receipt on the inactivity
+      # deadline re-arms after every body chunk (D5). Each resolves per
+      # phase — call kwarg > client kwarg > the shared timeout. A fire
+      # cancels the waiting task and surfaces the phase-named
+      # TimeoutError, never CancelledError (D8); a user cancel surfaces
+      # CancelledError. Runs inside the caller's task (§6).
+      def raw_stream(body, ttfb_timeout: nil, inactivity_timeout: nil, &block)
+        ttfb = resolve_deadline(:ttfb_timeout, ttfb_timeout, @ttfb_timeout)
+        idle = resolve_deadline(:inactivity_timeout, inactivity_timeout, @inactivity_timeout)
+        payload = body.is_a?(String) ? body : JSON.generate(body)
+
+        watchdog = Watchdog.new(Async::Task.current, ttfb)
+        response = nil
+        awaiting_headers = true
+        begin
+          watchdog.arm # TTFB deadline: creation through status receipt
+          response = @client.post(@path, headers: default_headers, body: payload)
+          awaiting_headers = false # headers are in — every deadline from here is read inactivity
+          raise_api_error(response) unless (200...300).cover?(response.status)
+
+          parser = SSE.new
+          @dropped_chunks = 0
+          response.body.each do |chunk|
+            watchdog.arm(idle) # re-arm the inactivity read-timeout per chunk (D5)
+            parser.push(chunk).each do |item|
+              if item.equal?(SSE::DONE) # the wire's terminal token: yielded in place, no payload
+                block&.call(item)
+                next
+              end
+
+              json = parse_chunk(item)
+              next if json.nil? # dropped (I61): counted, the stream continues
+
+              block&.call(json)
+            end
+          end
+        rescue Async::Cancel
+          if watchdog.fired
+            raise(TimeoutError, awaiting_headers ? "no response headers within #{ttfb}s" : "no data within #{idle}s")
+          end
+          raise CancelledError, "stream cancelled"
+        rescue *NETWORK_ERRORS => e
+          raise ConnectionError, "#{e.class}: #{e.message}"
+        ensure
+          # Complete bodies return the connection to the pool; an aborted
+          # read (cancel/timeout) discards it — a cancelled connection is
+          # never reused (AC3/D8). Same discipline as stream's ensure.
+          begin
+            response.finish
+          rescue StandardError, Async::Cancel
+            nil
+          end
+          watchdog.stop
+        end
+        nil
+      end
+
       private
 
       def default_headers
-        {
-          "authorization" => "Bearer #{@api_key}",
-          "content-type" => "application/json",
-          "accept" => "application/json",
-        }
+        # Authorization is optional (I03): sent only when a key is
+        # present and non-empty — a local engine needs none. With a key
+        # the header set is byte-identical to before.
+        if @api_key && !@api_key.empty?
+          {
+            "authorization" => "Bearer #{@api_key}",
+            "content-type" => "application/json",
+            "accept" => "application/json",
+          }
+        else
+          {"content-type" => "application/json", "accept" => "application/json"}
+        end
+      end
+
+      # The deadline knobs (I03): nil = unset (resolution falls through
+      # to the shared timeout); any explicitly-given value must be a
+      # positive Numeric. Applies at the constructor and, via
+      # resolve_deadline, to per-call overrides on raw_stream.
+      def validate_deadline!(name, value)
+        return if value.nil?
+        return if value.is_a?(Numeric) && value.positive?
+
+        raise ArgumentError, "#{name} must be a positive Numeric"
+      end
+
+      # Per-phase deadline resolution for raw_stream (I03): the call
+      # kwarg, else the client's, else the shared timeout. A call kwarg
+      # validates even though the client's own did — both are public
+      # surfaces. Runs BEFORE any reactor dependency, so a bad knob
+      # raises ArgumentError outside a reactor too.
+      def resolve_deadline(name, call_value, client_value)
+        validate_deadline!(name, call_value) unless call_value.nil?
+        call_value || client_value || @timeout
       end
 
       # Session-affinity headers per dialect when a session id is supplied

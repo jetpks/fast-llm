@@ -3,6 +3,39 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.6.0 (2026-10-25)
+
+- `Client#raw_stream` — the raw completions surface a proxy needs: the
+  caller's body forwarded verbatim (a String as-is, anything else
+  JSON-generated), every parsed SSE payload yielded to the block in
+  arrival order with the wire's terminal DONE token in its wire
+  position, and `nil` returned — the block is the only output channel.
+  No message accumulation, no tool interpretation, no stop-reason
+  mapping, no salvage, no StreamError, and exactly ONE POST attempt —
+  no auto-retry of any kind; a non-2xx raises the §8 mapping
+  immediately. A malformed payload still rides the I61 chunk seam:
+  one repair pass, then drop-and-count on `dropped_chunks` while the
+  stream continues.
+- The watchdog is now two-deadline: `ttfb_timeout` (status + headers)
+  and `inactivity_timeout` (re-armed after every body chunk), each an
+  optional constructor kwarg and per-call override on `raw_stream`,
+  validated as a positive Numeric, falling back to the shared
+  `timeout` when unset; prefill-scale values (1400 s) are first-class.
+  A fire surfaces the phase-named `TimeoutError` ("no response headers
+  within Ns" / "no data within Ns") — never `CancelledError` — and a
+  user cancel still surfaces `CancelledError`. `Client#stream` keeps
+  its single shared timeout and its byte-identical behavior; the
+  additive default on `Watchdog#arm` is the only existing-signature
+  change.
+- Authentication is optional: `api_key` defaults to nil and the
+  `authorization` header is sent only when the key is present and
+  non-empty — a local engine needs no key. With a key present the
+  header set is unchanged.
+- Docs: a README "Raw streaming" section plus the full reference page
+  (`docs/reference/raw-stream.md`); the README owner-prose gate now
+  rules two zones. Platform unchanged: ruby floor `>= 3.3`, CI matrix
+  3.3/3.4/4.0, no new dependencies.
+
 ## 0.5.0 (2026-10-17)
 
 - Tool-args streaming is now an incremental string-state machine
