@@ -5,12 +5,13 @@ one section per released version, newest first.
 
 ## 0.7.0 (unreleased)
 
-- Telemetry sink interface: `Client.new` accepts `telemetry:` — an Array
-  of sink objects, validated loudly at construction (a non-Array, or a
+- Telemetry sink interface: `Client.new` accepts `telemetry:` — any
+  Enumerable of sink objects (an Array, a Set, …), validated loudly at
+  construction (a non-Enumerable, or a
   sink not responding to all five hooks, raises `ArgumentError` naming
   the offender and the missing hook; duck-typed sinks are accepted
-  without module inclusion; the client keeps its own frozen copy, the
-  caller's array is never frozen or mutated) — and dispatches five
+  without module inclusion; the client keeps its own frozen Array —
+  `entries` — so the caller's container is never frozen or mutated) — and dispatches five
   observation hooks around a completion, ONE `Client#stream` invocation
   (creation retries inside, tool execution outside):
   `on_completion_start(model.id, body bytesize)` before the first POST,

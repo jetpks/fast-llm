@@ -392,9 +392,9 @@ RSpec.describe "telemetry sink interface (I01)" do
   end
 
   describe "registration validation" do
-    it "rejects a non-Array telemetry:" do
+    it "rejects a non-Enumerable telemetry:" do
       expect { client(telemetry: RecordingSink.new) }
-        .to raise_error(ArgumentError, /Array/)
+        .to raise_error(ArgumentError, /Enumerable/)
     end
 
     it "rejects a sink missing a hook, naming the sink and the hook" do
@@ -415,6 +415,20 @@ RSpec.describe "telemetry sink interface (I01)" do
         c.close
       end
       expect(log).to eq([:start_hook, :start, :ttfb_hook, :text_start, :text_delta, :text_end, :done, :end_hook])
+    end
+
+    it "accepts any Enumerable of sinks (a Set), freezing only its own copy" do
+      sink = RecordingSink.new
+      caller_set = Set[sink]
+      c = client(telemetry: caller_set)
+      expect(caller_set).not_to be_frozen
+      server.script([{type: :stream, content: "Hello"}])
+      Async do
+        c.stream(model: model, messages: messages) { |_event| }
+        c.close
+      end
+      expect_terminal_invariant(sink)
+      expect(sink.hooks).to include(:on_completion_start, :on_completion_end)
     end
   end
 

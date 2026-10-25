@@ -72,8 +72,8 @@ module Fast
         raise ArgumentError, "max_retries must be an Integer >= 0" unless max_retries.is_a?(Integer) && max_retries >= 0
         validate_deadline!(:ttfb_timeout, ttfb_timeout)
         validate_deadline!(:inactivity_timeout, inactivity_timeout)
-        unless telemetry.is_a?(Array)
-          raise ArgumentError, "telemetry must be an Array of sink objects, got #{telemetry.class}"
+        unless telemetry.is_a?(Enumerable)
+          raise ArgumentError, "telemetry must be an Enumerable of sink objects, got #{telemetry.class}"
         end
 
         telemetry.each do |sink|
@@ -92,11 +92,13 @@ module Fast
         @inactivity_timeout = inactivity_timeout
         @client = Async::HTTP::Client.new(@endpoint)
         @path = @endpoint.path.chomp("/") + "/chat/completions"
-        # I01: the client's own frozen copy (the caller's array is never
-        # frozen or mutated) + the precomputed emptiness check every
+        # I01: the client's own frozen copy (the caller's container is
+        # never frozen or mutated) + the precomputed emptiness check every
         # call site short-circuits on — zero allocation, zero added
-        # clock reads when no sink is registered.
-        @telemetry = telemetry.dup.freeze
+        # clock reads when no sink is registered. `entries` always
+        # builds a fresh Array — for an Array input too, so any
+        # Enumerable input lands in the same frozen-Array shape.
+        @telemetry = telemetry.entries.freeze
         @telemetry_active = !@telemetry.empty?
       end
 

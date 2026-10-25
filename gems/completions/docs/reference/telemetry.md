@@ -1,6 +1,7 @@
 # Reference: Telemetry
 
-`Client.new` accepts a `telemetry:` array of sink objects. The client
+`Client.new` accepts a `telemetry:` enumerable of sink objects (any
+`Enumerable` — an Array, a Set, …). The client
 notifies every registered sink at a fixed set of observation points around a
 completion — the gem defines observation points, nothing else. No sink ships
 with the gem: a fast-prometheus adapter or an OTel-class tracer implements
@@ -43,10 +44,10 @@ client = Fast::Completions::Client.new(
 Include `Fast::Completions::Telemetry::Sink` for the no-op defaults and
 override what you want, or respond to all five hooks without including
 anything — registration is duck-typed. Validation is loud and happens once,
-at construction: `telemetry:` must be an Array, and every element must
+at construction: `telemetry:` must be Enumerable, and every element must
 respond to all five hooks; anything else raises `ArgumentError` naming the
 offending sink and the missing hook. The client stores its own frozen copy —
-the caller's array is never frozen or mutated — and dispatches to multiple
+the caller's container is never frozen or mutated — and dispatches to multiple
 sinks in registration order at every call site.
 
 ## Hook inventory
