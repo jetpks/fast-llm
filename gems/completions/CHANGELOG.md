@@ -35,6 +35,16 @@ one section per released version, newest first.
   (`docs/reference/raw-stream.md`); the README owner-prose gate now
   rules two zones. Platform unchanged: ruby floor `>= 3.3`, CI matrix
   3.3/3.4/4.0, no new dependencies.
+- Internal refactor of `Client#raw_stream` (operator review of #7): the
+  method is short orchestration over three private seams — the request
+  seam (payload resolution + the ONE POST under the TTFB arm), the
+  each-event seam (the SSE parser, the per-chunk inactivity re-arm, the
+  DONE yield, the drop-and-count reset), and the cancel→timeout
+  translation — with the timeout phase derived from the response
+  instead of a threading flag. Behavior-identical: signature, yielded
+  events, error classes and messages, no-retry, and the
+  connection-finish discipline are unchanged, and the raw_stream spec
+  passes byte-unmodified.
 
 ## 0.5.0 (2026-10-17)
 
