@@ -3,6 +3,36 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.7.0 (unreleased)
+
+- Telemetry sink interface: `Client.new` accepts `telemetry:` — any
+  Enumerable of sink objects (an Array, a Set, …), validated loudly at
+  construction (a non-Enumerable, or a
+  sink not responding to all five hooks, raises `ArgumentError` naming
+  the offender and the missing hook; duck-typed sinks are accepted
+  without module inclusion; the client keeps its own frozen Array —
+  `entries` — so the caller's container is never frozen or mutated) — and dispatches five
+  observation hooks around a completion, ONE `Client#stream` invocation
+  (creation retries inside, tool execution outside):
+  `on_completion_start(model.id, body bytesize)` before the first POST,
+  `on_completion_ttfb` at the first parser item of the successful
+  attempt (a retried attempt's clock restarts), `on_event` for every
+  Event — before its consumer twin, terminals and the salvage `:error`
+  included, and even with no consumer block — `on_completion_end(stop
+  reason, duration, live message)` when `stream` returns, and
+  `on_completion_error(error Symbol derived from the raising class,
+  duration)` on every raise-out, cancellation included. Multiple sinks
+  dispatch in registration order. The allocation discipline is pinned
+  by spec measurement gates: zero added heap objects on the hot paths
+  with no sink registered, zero ADDED objects with a no-op sink (only
+  refs and immediates cross the boundary, durations are flonum
+  differences, every call site short-circuits on a precomputed
+  emptiness check), and zero added `Process.clock_gettime` reads. The
+  new reference page `docs/reference/telemetry.md` documents the
+  protocol, the ordering rule (telemetry is the ground-truth record
+  when consumer code is the suspect), the read-only convention for
+  sinks, and that metric naming belongs to the adapter.
+
 ## 0.6.0 (2026-10-25)
 
 - `Client#raw_stream` — the raw completions surface a proxy needs: the
