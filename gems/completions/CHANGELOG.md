@@ -3,7 +3,7 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
-## 0.7.0 (unreleased)
+## 0.7.0 (2026-10-25)
 
 - Telemetry sink interface: `Client.new` accepts `telemetry:` — any
   Enumerable of sink objects (an Array, a Set, …), validated loudly at
