@@ -117,6 +117,27 @@ RSpec.describe "fast-completions docs — links, quadrants, owner-prose preserva
     [removed, added]
   end
 
+  # Sort (line, new_lines-index) additions into the two ruled zones and
+  # an unruled remainder: zone B (I03, Raw streaming) and zone A (the
+  # errors pointer) are index ranges of the NEW README — structural,
+  # because blank-line LCS matches make diff-run contiguity
+  # uncomputable.
+  def classify(structural:, b_range:, a_range:)
+    zone_b = []
+    zone_a = []
+    unruled = []
+    structural.each do |(line, at)|
+      if b_range.cover?(at)
+        zone_b << [line, at]
+      elsif a_range.cover?(at)
+        zone_a << [line, at]
+      else
+        unruled << [line, at]
+      end
+    end
+    [zone_b, zone_a, unruled]
+  end
+
   it "lands the four owner labels at their ruled destinations (§2.4-4)" do
     definitions, = link_inventory(README)
     expect(definitions["see the tool docs"]).to eq("docs/reference/tools.md")
@@ -158,7 +179,7 @@ RSpec.describe "fast-completions docs — links, quadrants, owner-prose preserva
     end
   end
 
-  it "preserves the owner's README prose: removals stay inside the Error-taxonomy section; additions are link definitions plus the one ≤ 6-line errors pointer (§2.4-1, Grounds D9)" do
+  it "preserves the owner's README prose: removals stay inside the Error-taxonomy section; additions are link definitions plus the two ruled zones (§2.4-1, Grounds D9; zone B added I03)" do
     expect(File.file?(FIXTURE)).to be(true)
     old_lines = File.readlines(FIXTURE, chomp: true)
     new_lines = File.readlines(README, chomp: true)
@@ -176,20 +197,41 @@ RSpec.describe "fast-completions docs — links, quadrants, owner-prose preserva
     expect(outside).to be_empty,
       "removed owner prose outside the Error-taxonomy section: #{outside.map(&:first).inspect}"
 
-    # Non-definition additions form ONE contiguous block, ≤ 6 lines, linking
-    # docs/reference/errors.md, between "Dialects as data" and "## Parity".
-    block = added.reject { |(line, _)| line.match?(LINK_DEFINITION) }
-    expect(block).not_to be_empty
-    indexes = block.map(&:last)
-    expect(indexes.each_cons(2).all? { |a, b| b == a + 1 }).to be(true),
-      "replacement block is not contiguous: #{indexes.inspect}"
-    expect(block.size).to be <= 6
-    expect(new_lines[indexes.first..indexes.last].join("\n")).to include("docs/reference/errors.md")
+    # The two ruled addition zones, derived STRUCTURALLY from new_lines:
+    # blank-line LCS matches make diff-run contiguity uncomputable, so
+    # zones are ranges in the NEW file, not runs of the diff. Blank and
+    # link-definition additions are neutral — present anywhere without
+    # rule consequences.
     dialects_at = new_lines.index { |line| line.start_with?("## Dialects as data") }
     parity_at = new_lines.index("## Parity")
+    fiber_at = new_lines.index { |line| line.start_with?("## Fiber-native") }
+    raw_at = new_lines.index("## Raw streaming")
+    first_definition_at = new_lines.index { |line| line.match?(LINK_DEFINITION) }
     expect(dialects_at).not_to be_nil
     expect(parity_at).not_to be_nil
-    expect(indexes.first).to be > dialects_at
-    expect(indexes.last).to be < parity_at
+    expect(fiber_at).not_to be_nil
+    expect(raw_at).not_to be_nil, "README lost its ## Raw streaming section (I03 zone B)"
+    expect(first_definition_at).not_to be_nil
+    expect(raw_at).to be > fiber_at # zone B sits after ## Fiber-native...
+    expect(raw_at).to be < first_definition_at # ...and before the trailing link definitions
+
+    substantive = added.reject { |(line, _)| line.strip.empty? || line.match?(LINK_DEFINITION) }
+    zone_b, zone_a, unruled = classify(structural: substantive,
+      b_range: raw_at...first_definition_at, a_range: (dialects_at + 1)...parity_at)
+    expect(unruled).to be_empty,
+      "non-definition additions outside the two ruled zones: #{unruled.map(&:first).inspect}"
+
+    # Zone A — the errors pointer, rules unchanged from I53: ONE
+    # block of at most 6 non-definition lines, linking
+    # docs/reference/errors.md, between "Dialects as data" and "## Parity".
+    expect(zone_a).not_to be_empty
+    expect(zone_a.size).to be <= 6
+    expect(zone_a.map(&:first).join("\n")).to include("docs/reference/errors.md")
+
+    # Zone B — I03, the Raw streaming section: additions there must
+    # include the heading line and link docs/reference/raw-stream.md.
+    expect(zone_b).not_to be_empty
+    expect(zone_b.map(&:first)).to include("## Raw streaming")
+    expect(zone_b.map(&:first).join("\n")).to include("docs/reference/raw-stream.md")
   end
 end
