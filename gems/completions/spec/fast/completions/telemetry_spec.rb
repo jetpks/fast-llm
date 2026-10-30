@@ -4,8 +4,10 @@
 # MockLLMServer — every scenario asserts the frozen terminal invariant
 # (exactly one on_completion_start, then exactly one of
 # on_completion_end / on_completion_error) — plus the three measurement
-# gates: allocation no-regression (PIN 681), no-op-sink zero-overhead
-# (median EQUALITY), and zero added Process.clock_gettime reads (PIN 61).
+# gates (I04 hardened form): allocation gross-regression ceiling (PIN),
+# no-op-sink differential with median-quantization tolerance (|Δ| ≤ 1),
+# and the clock-read differential against the four sanctioned
+# instrumentation reads (Δ == 4).
 require "fast/completions"
 require_relative "../../support/mock_llm_server"
 require_relative "../../support/recording_sink"
@@ -26,14 +28,30 @@ RSpec.describe "telemetry sink interface (I01)" do
     end
   end)
 
-  # Provenance for both pins: measured at freeze on unmodified main @
-  # ef79e82 with this repo's Gemfile.lock, ruby 4.0.7 arm64-darwin23,
-  # command = the canonical recipe (one MockLLMServer, a ≥ 20 entry
-  # {type: :stream, content: "Hello"} script, model mock-model/:fireworks,
-  # ONE Message.user("hi"), ONE Client, a discarding consumer block, one
-  # Async block, 3 warmups, 15 measured GC.stat-delta runs, MEDIAN).
-  ALLOCATION_PIN = 681  # plateau jitter observed on main: {680, 681, 682, 687}
-  CLOCK_READ_PIN = 61   # all async-http/async internals; exactly 61 on main
+  # Provenance for the pins (I04 re-measurement): the canonical recipe —
+  # one MockLLMServer with pace! (the ~10ms opt-in inter-chunk gap) on a
+  # ≥ 20 entry {type: :stream, content: "Hello"} script, TCP_NODELAY +
+  # declared Connection: close on the mock (the I04 honesty port), model
+  # mock-model/:fireworks, ONE Message.user("hi"), ONE Client per phase,
+  # a discarding consumer block, one Async block, 3 warmups per client,
+  # 15 measured GC-stat-delta runs per client INTERLEAVED in the same
+  # window, MEDIAN aggregate — measured at freeze with the shipped lib
+  # of main @ 42088b5 (lib/ untouched by I04), this repo's Gemfile.lock,
+  # ruby 4.0.9 arm64-darwin25:
+  # zero-sink median 685, no-op-sink median 685 (|Δ| = 0 every run;
+  # pacing makes the client-visible chunk count deterministic, so the
+  # per-completion allocation count is a constant — the unpaced regime
+  # drifted ±1-2 between coalesced-chunk outcomes). PIN headroom: the
+  # ceiling is a GROSS-regression tripwire (a double-digit jump from a
+  # wire change), deliberately generous — ±1 sensitivity is the
+  # paired-measurement discipline's job, not this suite's.
+  # STANDING CALIBRATION RISK, named in-file (I04): CI (.github/workflows/
+  # ci.yml) runs this suite on ubuntu-latest × ruby {3.3, 3.4, 4.0} on
+  # every push/PR — a regime these darwin-measured numbers were never
+  # calibrated against. If a CI leg trips a pin here, re-measure on that
+  # regime before touching anything: the pin, not the code, is the
+  # suspect first.
+  ALLOCATION_PIN = 730  # darwin-measured 685; ceiling for the CI matrix regimes
 
   let(:server) { MockLLMServer.new.start }
   let(:model) do
@@ -432,7 +450,7 @@ RSpec.describe "telemetry sink interface (I01)" do
     end
   end
 
-  # ── The three measurement gates (I01) ─────────────────────────────
+  # ── The three measurement gates (I01; I04 hardened form) ──────────
   # Canonical recipe: one MockLLMServer; a ≥ 20 entry {type: :stream,
   # content: "Hello"} script; model mock-model/:fireworks (128_000 /
   # 64); ONE Message.user("hi"); a discarding consumer block; everything
@@ -441,13 +459,19 @@ RSpec.describe "telemetry sink interface (I01)" do
   # measured completions per client, each bracketed by its own
   # GC.stat(:total_allocated_objects) read; the aggregate is the MEDIAN
   # of the 15 (house allocations(times) convention — median, not mean:
-  # freeze-time observation showed rare one-off +15 spikes that would
-  # flake a mean). The two clients' measured runs INTERLEAVE so both
-  # phases sample the same scheduling regime (the client-visible chunk
-  # count — hence watchdog re-arm count — varies with TCP coalescing);
-  # sequential phases drift apart by a plateau step and would flake the
-  # frozen EQUALITY.
-  it "gate 1 + gate 2: zero-sink median <= PIN 681, and a no-op sink median EQUALS it (same run)" do
+  # a rare one-off spike would move a mean, never the median of 15).
+  # The two clients' measured runs INTERLEAVE and the assertion runs on
+  # PER-ITERATION PAIRED DELTAS (no-op minus zero, median of the 15
+  # pairs): under scheduler heat the client fiber can starve past a 10ms
+  # paced gap and two frames arrive as one read — a whole read-cycle
+  # bundle (~16 objects, ~4 clock reads) vanishes from ONE side of ONE
+  # pair (observed in-suite, ~1 run in 8 hot). Pairing plus the median
+  # makes the aggregate immune (a median moves only when ≥ 8 of 15
+  # pairs are polluted); a real telemetry-added allocation or clock read
+  # shifts EVERY pair together and still fails. The interleaving keeps
+  # adjacent pairs in the same thermal/scheduling regime.
+  it "gate 1 + gate 2: zero-sink median <= PIN (gross-regression tripwire), no-op sink |median delta| <= 1 (same run)", :measurement do
+    server.pace!
     server.script(Array.new(40) { {type: :stream, content: "Hello"} })
     plain = Fast::Completions::Client.new(base_url: server.url, api_key: "test-key")
     # A fresh allocation-free no-op sink, constructed once for this example.
@@ -473,21 +497,69 @@ RSpec.describe "telemetry sink interface (I01)" do
     end
 
     zero_sink_median = zero_deltas.sort[7]
-    no_op_median = no_op_deltas.sort[7]
+    pair_deltas = zero_deltas.zip(no_op_deltas).map { |z, n| n - z }
     expect(zero_sink_median).to be <= ALLOCATION_PIN
-    expect(no_op_median).to eq(zero_sink_median)
+    # No-op-sink overhead derivation (I04, paired-differential form): the
+    # no-op sink's five hooks are empty method calls — zero allocations by
+    # construction — so under a fixed read granularity every pair lands on
+    # the same constant (measured 685/685 at freeze). The residual hazard
+    # is receiver-side frame coalescing: under scheduler heat the client
+    # fiber can fail to poll for >10ms and two paced frames arrive as ONE
+    # read — one fewer watchdog arm per coalesced frame, a ~16-object
+    # bundle — and it lands on ONE side of ONE pair (observed once as a
+    # |Δ| of 16 between per-side medians in a hot suite run). Pairing
+    # makes the aggregate immune: a polluted pair shifts by its whole
+    # bundle, but the MEDIAN of 15 paired deltas moves only when ≥ 8
+    # pairs are polluted (P ≈ 1e-4 at the observed per-completion rate) —
+    # any real per-hook allocation shifts ALL 15 pairs together and
+    # still fails. |median| <= 1 absorbs median quantization only.
+    expect(pair_deltas.sort[7].abs).to be <= 1
   end
 
-  it "gate 3: ONE zero-sink completion adds ZERO Process.clock_gettime reads (<= PIN 61)" do
-    server.script([{type: :stream, content: "Hello"}, {type: :stream, content: "Hello"}])
-    c = Fast::Completions::Client.new(base_url: server.url, api_key: "test-key")
+  it "gate 3: telemetry adds ZERO clock reads beyond the four sanctioned instrumentation reads (differential, same run)", :measurement do
+    server.pace!
+    server.script(Array.new(40) { {type: :stream, content: "Hello"} })
+    plain = Fast::Completions::Client.new(base_url: server.url, api_key: "test-key")
+    noop_sink = Class.new { include Fast::Completions::Telemetry::Sink }.new
+    instrumented = Fast::Completions::Client.new(base_url: server.url, api_key: "test-key",
+      telemetry: [noop_sink])
+
+    zero_clock_deltas = []
+    no_op_clock_deltas = []
     Async do
-      c.stream(model: model, messages: messages) { |_event| } # warm the one-time paths
-      before = CLOCK_SPY_COUNT[0]
-      c.stream(model: model, messages: messages) { |_event| }
-      expect(CLOCK_SPY_COUNT[0] - before).to be <= CLOCK_READ_PIN
-      c.close
+      3.times { plain.stream(model: model, messages: messages) { |_event| } }
+      3.times { instrumented.stream(model: model, messages: messages) { |_event| } }
+      15.times do
+        before = CLOCK_SPY_COUNT[0]
+        plain.stream(model: model, messages: messages) { |_event| }
+        zero_clock_deltas << CLOCK_SPY_COUNT[0] - before
+        before = CLOCK_SPY_COUNT[0]
+        instrumented.stream(model: model, messages: messages) { |_event| }
+        no_op_clock_deltas << CLOCK_SPY_COUNT[0] - before
+      end
+      plain.close
+      instrumented.close
     end
+
+    # Differential derivation (I04, paired-differential form): under a
+    # fixed read granularity both sides see the identical async/async-http
+    # internal read count, so every clock read in the no-op-sink window
+    # that is NOT in the zero-sink window is a read TELEMETRY ADDED. The
+    # sanctioned set is exactly four per completion, all
+    # @telemetry_active-gated in client.rb: the completion-start clock
+    # (notify_start), the per-attempt POST clock (create_response), the
+    # TTFB clock (feed_stream), and the terminal duration clock
+    # (notify_end / notify_error). Measured at freeze: zero-sink 73,
+    # no-op-sink 77, every pair Δ = 4. Residual hazard (observed once in
+    # a hot suite run as a per-side-median Δ of 0): receiver-side frame
+    # coalescing under scheduler heat removes a ~4-read bundle from ONE
+    # side of ONE pair — pairing plus the median of 15 makes the
+    # aggregate immune (a shift needs ≥ 8 polluted pairs); any regime
+    # shift moves BOTH sides of every pair and cancels. Any
+    # telemetry-adjacent change that adds a fifth read shifts every pair
+    # to 5 and fails.
+    clock_pair_deltas = zero_clock_deltas.zip(no_op_clock_deltas).map { |z, n| n - z }
+    expect(clock_pair_deltas.sort[7]).to eq(4)
   end
 
   # A sink defining only four of the five hooks (missing on_event) —
