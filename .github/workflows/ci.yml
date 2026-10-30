@@ -13,7 +13,7 @@ jobs:
       matrix:
         # Every supported minor, from the floor (required_ruby_version) to
         # the dev version; mise resolves each to its latest patch.
-        ruby: ["3.3", "3.4", "4.0"]
+        ruby: ["3.4", "4.0"]
     env:
       BUNDLE_PATH: vendor/bundle
       MISE_RUBY_VERSION: ${{ matrix.ruby }}
