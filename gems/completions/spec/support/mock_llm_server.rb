@@ -13,6 +13,17 @@ require "json"
 # suppress_usage!, captured_requests/captured_request_logs, the
 # empty-connect discipline, and the EPIPE discipline.
 #
+# I04 honesty port (measurement-gate determinism): tart upstream — this
+# copy forked from it at 2943ef0 — ALREADY declares `Connection: close` on
+# every responder (the mock answers ONE request per connection and closes;
+# leaving the header undeclared is an HTTP/1.1 keep-alive lie that puts
+# every pooled-connection retry on a FIN race — I03 Verdict §6.1). Ported
+# verbatim (tart's shipped form), plus two additions tart does not carry:
+# TCP_NODELAY on accepted sockets (sender-side chunk hygiene; the client
+# side already disables Nagle) and the OPT-IN inter-chunk pacing seam
+# `pace!` (deterministic client-visible chunk boundaries for the
+# measurement gates only — see pace! below).
+#
 # A hermetic mock OpenAI-compatible endpoint over TCP (127.0.0.1, ephemeral
 # port): the client under test (Async::HTTP over the chat-completions
 # wire) talks to it.
@@ -34,6 +45,10 @@ require "json"
 #   by `data: [DONE]`.
 # - Non-streaming reply: HTTP 200 JSON {choices: [{message: {...},
 #   finish_reason}], usage}.
+# - Every response declares `Connection: close` (I04): the mock serves ONE
+#   request per connection and closes — an honest close declaration lets
+#   the client retire the pooled connection immediately instead of racing
+#   the server's FIN on a retry.
 #
 # Scripting: pass a list of response specs, each either
 #   {type: :stream, content: "text", tool_calls: [{id:, name:, arguments: hash_or_string}]}
@@ -69,6 +84,7 @@ class MockLLMServer
     @template = []
     @accept_thread = nil
     @suppress_usage = false
+    @chunk_gap = nil # I04: pacing is OPT-IN (pace!); nil = default unpaced behavior
   end
 
   # The Case-3 compaction instrument (I29): every response is served
@@ -90,6 +106,23 @@ class MockLLMServer
   # Reset the shifting script queue to the template (fresh app, same bytes).
   def rearm!
     @script = @template.dup
+    self
+  end
+
+  # I04 measurement-determinism seam (OPT-IN, default OFF): when enabled,
+  # every chunked write is preceded by a `gap`-second sleep so each flushed
+  # SSE frame arrives at the client as its own read — back-to-back writes
+  # on loopback coalesce under the receiver's read granularity, the chunk
+  # count the client sees becomes scheduler-determined, and any
+  # per-chunk-counted quantity (watchdog re-arms → allocations, clock
+  # reads) drifts run to run. A ~10ms gap dwarfs loopback scheduling
+  # jitter, making the client-visible chunk count deterministic. Used ONLY
+  # by the telemetry measurement examples (telemetry_spec.rb); the default
+  # server behavior — write+flush with no delay — is unchanged, and
+  # slow_stream's spec_pause 0.1 interrupt-race semantics are a separate,
+  # untouched mechanism.
+  def pace!(gap: 0.01)
+    @chunk_gap = gap
     self
   end
 
@@ -136,6 +169,17 @@ class MockLLMServer
   NOTABLE_HEADERS = %w[authorization content-type accept user-agent].freeze
 
   def serve(io)
+    # I04 sender hygiene: disable Nagle on the accepted socket so a
+    # flushed chunk leaves as its own TCP segment. The client side
+    # already disables Nagle (io-endpoint wrapper.rb `buffered: false`
+    # default); the rescue set is that file's prior art (darwin raises
+    # EINVAL on a not-yet-formed connection — serve anyway).
+    begin
+      io.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+    rescue Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOPROTOOPT
+      nil
+    end
+
     request_line = io.gets
     # A connection that sends no request line (empty TCP connect, prober,
     # port scan) consumes nothing: no script shift, no log entry, no response
@@ -182,7 +226,8 @@ class MockLLMServer
     }
     payload[:usage] = {prompt_tokens: 10, completion_tokens: 5, total_tokens: 15} unless @suppress_usage
     out = JSON.generate(payload)
-    io.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: #{out.bytesize}\r\n\r\n#{out}")
+    io.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n" \
+      "Content-Length: #{out.bytesize}\r\n\r\n#{out}")
   end
 
   # The body openai-compatible endpoints return on a schema rejection;
@@ -194,11 +239,13 @@ class MockLLMServer
     out = JSON.generate(payload)
     status = spec[:status] || 400
     extra = (spec[:headers] || {}).map { |name, value| "#{name}: #{value}\r\n" }.join
-    io.write("HTTP/1.1 #{status} Bad Request\r\nContent-Type: application/json\r\nContent-Length: #{out.bytesize}\r\n#{extra}\r\n#{out}")
+    io.write("HTTP/1.1 #{status} Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\n" \
+      "Content-Length: #{out.bytesize}\r\n#{extra}\r\n#{out}")
   end
 
   def respond_stream(io, spec)
-    io.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+    io.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n" \
+      "Transfer-Encoding: chunked\r\n\r\n")
     if spec[:raw_frames] # I61: verbatim malformed-wire bytes, chunked framing only
       spec[:raw_frames].each { |frame| write_chunk(io, frame) }
     else
@@ -262,6 +309,7 @@ class MockLLMServer
     # The client may be torn down mid-stream (interrupt tests disconnect
     # mid-response); writing to a dead socket must not pollute suite
     # stderr with EPIPE noise (I03 backlog carry-in).
+    sleep(@chunk_gap) if @chunk_gap # I04: opt-in pacing (see pace!)
     io.write(format("%x\r\n%s\r\n", payload.bytesize, payload))
     io.flush
   rescue Errno::EPIPE
