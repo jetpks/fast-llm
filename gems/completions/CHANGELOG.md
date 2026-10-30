@@ -3,6 +3,13 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.8.0 (2026-10-30)
+
+- Ruby 3.3 support dropped: `required_ruby_version` moves from
+  `>= 3.3` to `>= 3.4`, and the monorepo CI matrix narrows to 3.4/4.0
+  to match. No other platform change — no new dependencies, no API
+  movement.
+
 ## 0.7.0 (2026-10-25)
 
 - Telemetry sink interface: `Client.new` accepts `telemetry:` — any

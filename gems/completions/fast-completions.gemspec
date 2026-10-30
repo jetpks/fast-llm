@@ -16,7 +16,7 @@ Gem::Specification.new do |spec|
   spec.license = "MIT"
   spec.homepage = "https://github.com/jetpks/fast-llm"
 
-  spec.required_ruby_version = ">= 3.3"
+  spec.required_ruby_version = ">= 3.4"
   spec.required_rubygems_version = ">= 3.5.3"
 
   # RubyGems loads gemspecs via eval: __dir__ is the dirname of the path AS
