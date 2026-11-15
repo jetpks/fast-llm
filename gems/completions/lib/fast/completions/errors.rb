@@ -59,6 +59,37 @@ module Fast
       end
     end
 
+    # I06 serving-stack tool honesty: the loud in-band failure surface
+    # for tool-call arguments that fail the finalize parse even after the
+    # control-character repair walk (Protocol.parse_streaming_json). NEVER
+    # raised — a raise out of StreamAccumulator#finish would kill
+    # consuming agent sessions (the pre-tart-#19 crash lineage); the
+    # marker rides block[:arguments] itself, so every surface that
+    # already reads arguments (message blocks, :tool_call_end events)
+    # carries it with no new block keys. Collision-proof by construction:
+    # the marker's keys are SYMBOLS, and JSON.parse only ever yields
+    # String keys — no legitimate arguments hash can contain :error or
+    # :raw_arguments.
+    module ToolArgumentsFailure
+      MESSAGE = "tool call arguments are unparseable JSON at stream finalize " \
+                "(duplicated or truncated arguments stream); the raw argument " \
+                "bytes are carried in raw_arguments"
+
+      module_function
+
+      # The marker Hash: {error: MESSAGE, raw_arguments: raw}.
+      def marker(raw)
+        {error: MESSAGE, raw_arguments: raw}
+      end
+
+      # The consumer-side predicate (tart's chat.rb): true only for the
+      # marker — legitimate parsed arguments have String keys and can
+      # never match.
+      def marker?(value)
+        value.is_a?(Hash) && value.key?(:error) && value.key?(:raw_arguments)
+      end
+    end
+
     class CancelledError < StandardError; end        # NOT < Error (D8)
 
     # I63 constrained sampling (pi api/constrained-sampling.ts). INTERNAL:

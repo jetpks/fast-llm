@@ -3,6 +3,32 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.9.0 (2026-11-15)
+
+- Tool-args finalize honesty (I06): an arguments scratch that fails the
+  finalize whole-buffer parse — even after the control-character repair
+  walk — no longer degrades to a silent `arguments = {}` (pi's
+  partial-json last resort, which made a gateway double-emit look like
+  model incompetence: the muse-glimmer lineage). It now surfaces as the
+  loud in-band marker `{error: <message>, raw_arguments: <the raw
+  scratch>}` on the tool_call block's `:arguments` (and therefore on the
+  `:tool_call_end` event), constructed by
+  `Fast::Completions::ToolArgumentsFailure.marker(raw)` and detectable
+  with `ToolArgumentsFailure.marker?(value)`. The marker's keys are
+  SYMBOLS — `JSON.parse` only yields String keys — so it can never
+  collide with legitimate parsed arguments. Nothing raises:
+  `StreamAccumulator#finish` still returns, the stream outcome is
+  unchanged (a completed `tool_calls` stream still finalizes `[:done,
+  :tool_use]`), and consumers should turn the marker into an `{error:}`
+  tool result. Unchanged paths: an EMPTY scratch still finalizes `{}`
+  (the honest zero-arg / bytes-never-arrived case; the chunk-seam drop
+  path counts its own drops), a repairable control-char scratch still
+  repairs to valid arguments, and a well-formed stream is byte-for-byte
+  unchanged. The wire format is untouched. Consumers executing
+  arguments sight-unseen (tart pre-pin-bump) will now splat the marker's
+  symbol keys and fail loudly at the kwargs boundary instead of
+  executing a bogus zero-arg call — the intended honesty gain.
+
 ## 0.8.0 (2026-10-30)
 
 - Ruby 3.3 support dropped: `required_ruby_version` moves from
