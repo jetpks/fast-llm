@@ -212,10 +212,16 @@ module Fast
       end
 
       # OQ-4: control-character repair (pi utils/json-parse.ts repairJson
-      # :20-77), {} as the last resort (pi's partial-json fallback). The
-      # repaired re-parse gets its OWN method — a rescue body's exception
-      # is not caught by a later rescue clause of the same method (the
-      # 0.4.0 leak: a delta boundary splitting an escape sequence left the
+      # :20-77); I06: a NON-EMPTY scratch that still fails the parse no
+      # longer degrades to pi's silent {} partial-json fallback — it
+      # surfaces the loud in-band ToolArgumentsFailure marker instead (a
+      # parse failure must never masquerade as a deliberate zero-arg
+      # call). An EMPTY scratch stays {}: the honest representation of a
+      # genuine zero-arg call (or argument bytes that never arrived —
+      # the chunk-seam drop path counts those separately). The repaired
+      # re-parse gets its OWN method — a rescue body's exception is not
+      # caught by a later rescue clause of the same method (the 0.4.0
+      # leak: a delta boundary splitting an escape sequence left the
       # scratch buffer mid-string with a trailing backslash; repair "fixed"
       # it, the re-parse raised, and the step died). pi's outer try/catch
       # absorbs this; so do we.
@@ -225,13 +231,15 @@ module Fast
         JSON.parse(partial)
       rescue JSON::ParserError
         repaired = repair_json(partial)
-        repaired == partial ? {} : parse_repaired_json(repaired)
+        repaired == partial ? ToolArgumentsFailure.marker(partial) : parse_repaired_json(repaired, partial)
       end
 
-      def parse_repaired_json(repaired)
+      # `raw` is the ORIGINAL scratch: the marker reports the bytes the
+      # wire delivered, never our own repair transform of them.
+      def parse_repaired_json(repaired, raw)
         JSON.parse(repaired)
       rescue JSON::ParserError
-        {}
+        ToolArgumentsFailure.marker(raw)
       end
 
       # Escape raw control characters inside strings; double backslashes
@@ -482,9 +490,11 @@ module Fast
               raw = streamer ? streamer.scratch : "" # no-fragment blocks finalize an empty scratch
               # Finalize is the SOLE authority (L9): one whole-buffer parse
               # of the raw bytes — the JSON.parse fast path when the stream
-              # completed, the repair walk + {} last resort otherwise
-              # (pi :453 / utils/json-parse.ts :20-90). The live Hash the
-              # machine grew is replaced here, exactly once.
+              # completed, the repair walk otherwise, and (I06) the loud
+              # in-band ToolArgumentsFailure marker when a NON-EMPTY
+              # scratch still will not parse — never pi's silent {}
+              # last resort. The live Hash the machine grew is replaced
+              # here, exactly once.
               block[:arguments] = Protocol.parse_streaming_json(raw)
               events << Event.new(type: :tool_call_end, content_index: index,
                 tool_call: {id: block[:id], name: block[:name], arguments: block[:arguments]},
