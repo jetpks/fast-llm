@@ -77,14 +77,27 @@ RSpec.describe Fast::Completions::Protocol do
       expect(hash[:tools].first["function"]["parameters"]).to equal(tool.parameters) # same object: verbatim
     end
 
-    it "emits tools: [] when no tools but tool history exists (pi :860-863)" do
+    it "gates the tools: [] fallback behind requires_tools_with_tool_history (v1.6.0 #11843 — pi :595-597 + detected :1273): the default arm emits NO tools key on tool history" do
       history = [
         Fast::Completions::Message.assistant([{type: :tool_call, id: "c1", name: "t", arguments: {}}]),
         Fast::Completions::Message.tool_result(tool_call_id: "c1", content: "out"),
         Fast::Completions::Message.user("u"),
       ]
-      expect(build(ladder_model(reasoning: false), messages: history)[:tools]).to eq([])
+      expect(build(ladder_model(reasoning: false), messages: history)).not_to have_key(:tools)
       expect(build(ladder_model(reasoning: false), messages: [Fast::Completions::Message.user("u")])).not_to have_key(:tools)
+    end
+
+    it "emits tools: [] on tool history when the dialect declares requires_tools_with_tool_history true (the #11843 opt-in arm)" do
+      history = [
+        Fast::Completions::Message.assistant([{type: :tool_call, id: "c1", name: "t", arguments: {}}]),
+        Fast::Completions::Message.tool_result(tool_call_id: "c1", content: "out"),
+        Fast::Completions::Message.user("u"),
+      ]
+      gated = ladder_model(reasoning: false,
+        dialect: Fast::Completions.dialect(:tools_history_protocol) { requires_tools_with_tool_history true })
+      expect(build(gated, messages: history)[:tools]).to eq([])
+      # no tool history, no tools key even under the letter
+      expect(build(gated, messages: [Fast::Completions::Message.user("u")])).not_to have_key(:tools)
     end
 
     it "emits tool_stream only with the zai dialect AND tools (§9.8)" do

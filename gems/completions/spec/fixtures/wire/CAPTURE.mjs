@@ -1,6 +1,6 @@
-// I51 canonical pi wire capture — drives REAL pi (installed
-// @earendil-works/pi-ai 1.1.0 dist — the same compiled wire code the parity
-// rig's pi binary runs) against a hermetic TCP mock and records every request
+// I51 canonical pi wire capture — drives REAL pi (the
+// @earendil-works/pi-ai dist — the same compiled wire code the parity rig's
+// pi binary runs) against a hermetic TCP mock and records every request
 // body VERBATIM, one fixture per scenario. No network, no API keys.
 //
 // Fixture = {tag, request_path, request_body (raw string)}. The byte-parity
@@ -8,21 +8,26 @@
 // the same scenario inputs.
 //
 // THIS FILE IS PROVENANCE ONLY — the suite never executes it (the fixtures
-// are frozen bytes). It was run once, hermetically, on 2026-10-13; the
-// staging copy at build/i51-harness/fixtures/ is its output + this driver.
-// FROZEN DIGESTS (SHA256 of request_body; Grounds §3, AC2 wire-fixtures-digests):
+// are frozen bytes). First run hermetically on 2026-10-13 (the 1.1.0-era
+// dist; staging copy build/i51-harness/fixtures/); RE-IMPORTED at the
+// v1.6.0 dist on 2026-11-23 (I115 digest re-pin): this driver — as committed
+// here, imported at the promoted v1.6.0 oracle dist — reproduces ALL 11
+// current fixture bytes byte-exactly (verified cold this session; the 6
+// #10741/#10995 movers re-pinned, the 7 stable rows byte-held).
+// FROZEN DIGESTS (SHA256 of request_body; Grounds §3, AC2 wire-fixtures-digests;
+// re-measured 2026-11-23 at the v1.6.0 dist):
 //   fireworks_plain=0b9da927d3cab0b8b41ecb634fde099729e03f817ef6ba3aba26720df2130d93
-//   openai_ladder_on=b05b45aeb3a4f7bdfa12d142e839882855688a246ead4d016fbe474188dfaed2
-//   openai_ladder_off=60914406494e2e8403de6b932f01cd5d901c9ae4c4de75e283b25656fa6304b1
+//   openai_ladder_on=a7569746d7d76f927e56a63935c34c6005bca38f48346a572d858e86db6a8c77
+//   openai_ladder_off=5def24d7711819d5a609d94b515c3c89bf05e4b1b36434dab4ff2923a9aa2533
 //   zai_on=9a23aee6b115cce0bd6a608465f2c56332123e47a0f22c491793c0a4d0e45c13
 //   zai_off=88dd5af69ceb68bbc41aad9ddfbc4dcb36e0dd66fec3563054d484cc0f727f7c
 //   deepseek_on=ce98edaee2ecb634dcd4461e3e56cfc4f973cd37026fc390b63ac2bdfbfec5f5
 //   tool_roundtrip=940d8f5b262f59a3db7b27a70471ac96a40c170264edc83219bef83dce1e9038
-//   thinking_replay=c9259d5da9ca8c63186522c24b9bdfd1fe81aa0903187b0f50634b56eb3c7e6c
-//   reasoning_details_replay=c21da08d520e246652b33bedf76d89db581692a7775de5181dc8c63013a0ae4e
-//   cross_model_thinking_replay=809a9b7ecc99399379031524ed5810677e31c22cac2f64eb6e728602ea5939fc
-//   budget_field=fb29e70650e9708f394c319d3c8ecacb840c134d214f9ce2747151356b86d1b7
-import { streamSimple } from "/Users/eric/.local/share/mise/installs/node/24.18.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js";
+//   thinking_replay=7093eff382dc5af5f2cb74f1d031b8b3e5330cc85f899b1b4858c550b57bc89a
+//   reasoning_details_replay=f910f27e72efaf5dca1be07ab7703830482c093fc0e46efe8503d5263830cb6a
+//   cross_model_thinking_replay=7b737b8f59590d748f31286aa597ec87e1933fd59fb853069e4756994e4d891f
+//   budget_field=1e6dd9ae04ff155060a4ea65fea65e8680ff5d22d232e20c83d8f0d210d5d00f
+import { streamSimple } from "/Users/eric/architect/spaces/20261009-pi-port/build/pi-oracle-v1.6.0/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js";
 import { createServer } from "node:net";
 import { createHash } from "node:crypto";
 import { writeFileSync, mkdirSync } from "node:fs";

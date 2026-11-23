@@ -1,6 +1,6 @@
 # Reference: Dialects
 
-A dialect is a declaration: a closed 14-key vocabulary of wire deviations that
+A dialect is a declaration: a closed 15-key vocabulary of wire deviations that
 the codec consumes as data. The default is the plain OpenAI arm; the gem ships
 `:zai`, `:deepseek`, and `:fireworks` as declarations. There is no provider
 detection and no base-URL constant anywhere — the consumer declares, the codec
@@ -14,7 +14,7 @@ Every key, its default, and its allowed values:
 |---|---|---|
 | `thinking_format` | `:openai` | `:openai`, `:zai`, `:deepseek` |
 | `max_tokens_field` | `"max_completion_tokens"` | `"max_completion_tokens"`, `"max_tokens"` |
-| `supports_developer_role` | `true` | boolean |
+| `supports_developer_role` | `false` | boolean |
 | `supports_reasoning_effort` | `true` | boolean |
 | `supports_store` | `true` | boolean |
 | `supports_usage_in_streaming` | `true` | boolean |
@@ -26,11 +26,22 @@ Every key, its default, and its allowed values:
 | `send_session_affinity_headers` | `false` | boolean |
 | `session_affinity_format` | `:openai` | `:openai`, `:openai_nosession`, `:openrouter` |
 | `supports_strict_mode` | `false` | boolean |
+| `requires_tools_with_tool_history` | `false` | boolean |
 
 The vocabulary is CLOSED. An unknown key or an unknown enum value raises
 `ArgumentError` at declaration time — fail loud, never silently mistranslate.
 The two header keys drive the session-affinity headers `Client#stream` adds
 when a `session_id` is supplied.
+
+Two keys encode the pi v1.6.0 compat letters. `supports_developer_role`
+defaults `false` since pi #10741: the developer role is OpenAI's — other
+hosts' chat templates reject it and every host accepts `system` — so a
+reasoning-model instruction goes out as `system` unless the consumer's
+dialect declares `true` (pi's own API hosts do).
+`requires_tools_with_tool_history` gates the `tools: []` fallback
+(pi #11843): a turn with tool history but no declared tools emits an empty
+`tools` array only when the dialect declares the key `true`; the default
+arm emits no `tools` key at all.
 
 ## Strict-mode tool schemas
 

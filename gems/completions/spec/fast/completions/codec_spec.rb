@@ -73,14 +73,23 @@ RSpec.describe Fast::Completions::Codec do
       expect(wire(nil, history).first).to eq({role: "assistant", content: "x"})
     end
 
-    it "cross-model thinking folds to a text block, concatenated (pi :113-130, fixture 10)" do
+    it "cross-model thinking DROPS, never folds to text (v1.6.0 #10995 — pi transform-messages.js:98-105; fixture cross_model_thinking_replay)" do
       history = [
         Fast::Completions::Message.user("hello"),
         assistant([{type: :thinking, thinking: "let me think", signature: "reasoning_content"},
                    {type: :text, text: "Hi!"}], provider: "other-provider"),
         Fast::Completions::Message.user("thanks"),
       ]
-      expect(wire(nil, history)[1]).to eq({role: "assistant", content: "let me thinkHi!"})
+      expect(wire(nil, history)[1]).to eq({role: "assistant", content: "Hi!"})
+    end
+
+    it "cross-model drop is ONE gate: non-empty AND redacted thinking both drop (pi v1.6.0 transform-messages.js:98-105 `if (!isSameModel) return []`)" do
+      positive = [assistant([{type: :thinking, thinking: "let me think", signature: "reasoning_content"},
+                             {type: :text, text: "x"}], provider: "other")]
+      expect(wire(nil, positive).first).to eq({role: "assistant", content: "x"})
+      redacted = [assistant([{type: :thinking, thinking: "secret", signature: "reasoning_content", redacted: true},
+                             {type: :text, text: "x"}], provider: "other")]
+      expect(wire(nil, redacted).first).to eq({role: "assistant", content: "x"})
     end
 
     it "redacted: same-model kept (replayed through its signature), cross-model dropped (pi :103-118)" do
@@ -188,9 +197,9 @@ RSpec.describe Fast::Completions::Codec do
   end
 
   describe "message conversion (§9.1)" do
-    it "instructions: developer iff reasoning AND supports_developer_role (pi :1233)" do
+    it "instructions: system on the DEFAULT arm even for a reasoning model (v1.6.0 #10741 — pi :890 instructionRole + :1259-1265 supportsDeveloperRole = isOpenAI)" do
       history = [Fast::Completions::Message.user("u")]
-      expect(wire("be good", history).first).to eq(role: "developer", content: "be good")
+      expect(wire("be good", history).first).to eq(role: "system", content: "be good")
 
       plain = Fast::Completions::Model.new(id: "mock-1", reasoning: false, context_window: 128_000, max_tokens: 512)
       out = described_class.to_wire_messages("be good", described_class.normalize(history, plain), plain, dialect)
@@ -200,6 +209,15 @@ RSpec.describe Fast::Completions::Codec do
         max_tokens: 512, dialect: :zai)
       out = described_class.to_wire_messages("be good", described_class.normalize(history, zai), zai, zai.dialect)
       expect(out.first).to eq(role: "system", content: "be good") # zai: no developer role
+
+      # pi's own API hosts declare the letter explicitly and still get
+      # developer (the detected default is false — the flip is the DEFAULT
+      # alone; openai-completions.js:1262-1263).
+      host = Fast::Completions::Model.new(id: "mock-1", reasoning: true, context_window: 128_000,
+        max_tokens: 512,
+        dialect: Fast::Completions.dialect(:openai_host_codec) { supports_developer_role true })
+      out = described_class.to_wire_messages("be good", described_class.normalize(history, host), host, host.dialect)
+      expect(out.first).to eq(role: "developer", content: "be good")
     end
 
     it "user strings pass verbatim; block arrays pass text parts; all-empty skips (pi :1319-1342)" do
