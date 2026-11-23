@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Dialect declaration pins (Specification §4): the closed 14-key
+# Dialect declaration pins (Specification §4): the closed 15-key
 # vocabulary, defaults = the plain arm, the well-known trio, fail-loud
 # validation, last-declaration-wins.
 require "fast/completions"
@@ -10,7 +10,7 @@ RSpec.describe Fast::Completions::Dialect do
     dialect = described_class.new(nil)
     expect(dialect.thinking_format).to eq(:openai)
     expect(dialect.max_tokens_field).to eq("max_completion_tokens")
-    expect(dialect.supports_developer_role).to be(true)
+    expect(dialect.supports_developer_role).to be(false) # v1.6.0 #10741: the developer role is OpenAI's (openai-completions.js:1259-1265 + :890)
     expect(dialect.supports_reasoning_effort).to be(true)
     expect(dialect.supports_store).to be(true)
     expect(dialect.supports_usage_in_streaming).to be(true)
@@ -22,9 +22,10 @@ RSpec.describe Fast::Completions::Dialect do
     expect(dialect.send_session_affinity_headers).to be(false)
     expect(dialect.session_affinity_format).to eq(:openai)
     expect(dialect.supports_strict_mode).to be(false)
+    expect(dialect.requires_tools_with_tool_history).to be(false) # v1.6.0 #11843 (openai-completions.js:595-597 + detected :1273)
   end
 
-  it "has a CLOSED 14-key vocabulary; unknown keys raise ArgumentError at declaration" do
+  it "has a CLOSED 15-key vocabulary; unknown keys raise ArgumentError at declaration" do
     expect { described_class.new(nil, no_such_key: true) }
       .to raise_error(ArgumentError, /unknown dialect key :no_such_key/)
   end
@@ -67,13 +68,14 @@ RSpec.describe Fast::Completions.dialect(:zai) do
   end
 end
 
-RSpec.describe "supports_strict_mode (I63 — the 14th key)" do
-  it "supports_strict_mode defaults false, is a free boolean, and sits last in canonical order" do
+RSpec.describe "supports_strict_mode (I63 — the 14th key at its landing; the 15th is requires_tools_with_tool_history)" do
+  it "supports_strict_mode defaults false, is a free boolean, and sits second-to-last in canonical order" do
     expect(Fast::Completions::Dialect::VOCABULARY[:supports_strict_mode]).to eq([false, nil])
-    expect(Fast::Completions::Dialect::VOCABULARY.size).to eq(14)
+    expect(Fast::Completions::Dialect::VOCABULARY.size).to eq(15)
     dialect = Fast::Completions::Dialect.new(nil)
     expect(dialect.supports_strict_mode).to be(false)
-    expect(dialect.to_h.keys.last).to eq(:supports_strict_mode) # appended after session_affinity_format
+    expect(dialect.to_h.keys.last).to eq(:requires_tools_with_tool_history) # the 15th key appended after supports_strict_mode
+    expect(dialect.to_h.keys[-2]).to eq(:supports_strict_mode) # appended after session_affinity_format
     expect(Fast::Completions::Dialect.new(nil, supports_strict_mode: true).supports_strict_mode).to be(true)
   end
 
@@ -87,6 +89,21 @@ RSpec.describe "supports_strict_mode (I63 — the 14th key)" do
   it "supports_strict_mode is INSIDE the closed vocabulary — unknown keys still raise ArgumentError at declaration" do
     expect { Fast::Completions::Dialect.new(nil, no_such_key: true) }
       .to raise_error(ArgumentError, /unknown dialect key :no_such_key/)
+  end
+end
+
+RSpec.describe "the v1.6.0 default flips (#10741 + #11843)" do
+  it "supports_developer_role defaults FALSE (pi openai-completions.js:1259-1265 supportsDeveloperRole = isOpenAI + :890 instructionRole); an explicit true declaration still opts in (pi's own API hosts)" do
+    expect(Fast::Completions::Dialect::VOCABULARY[:supports_developer_role]).to eq([false, nil])
+    expect(Fast::Completions::Dialects.default.supports_developer_role).to be(false)
+    expect(Fast::Completions.dialect(:openai_host_probe) { supports_developer_role true }.supports_developer_role).to be(true)
+  end
+
+  it "requires_tools_with_tool_history defaults false, is a free boolean, and sits LAST in canonical order (pi openai-completions.js:595-597 + detected :1273)" do
+    expect(Fast::Completions::Dialect::VOCABULARY[:requires_tools_with_tool_history]).to eq([false, nil])
+    expect(Fast::Completions::Dialect.new(nil).requires_tools_with_tool_history).to be(false)
+    expect(Fast::Completions::Dialect.new(nil).to_h.keys.last).to eq(:requires_tools_with_tool_history)
+    expect(Fast::Completions.dialect(:tools_on_history_probe) { requires_tools_with_tool_history true }.requires_tools_with_tool_history).to be(true)
   end
 end
 

@@ -3,6 +3,41 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.10.0
+
+- The dialect vocabulary absorbs the pi-ai v1.6.0 compat letters (three
+  wire fixes; no shipped dialect's declaration changes — the shipped
+  `:zai`/`:deepseek` explicit `supports_developer_role false` and the
+  empty `:fireworks` are byte-held):
+  - #10741 — `supports_developer_role` defaults `true` → `false`
+    (pi-ai openai-completions.js `supportsDeveloperRole = isOpenAI` at
+    :1259-1265 + `instructionRole` at :890): a reasoning-model
+    instruction goes out as `system` on the default arm; OpenAI's own
+    API hosts declare `true` and still get `developer`.
+  - #10995 — cross-model non-empty thinking DROPS in replay
+    normalization, never folds to a text block (pi-ai
+    transform-messages.js:98-105: "Thinking from another model is
+    dropped" — sending it as plain text makes the new model treat it as
+    part of the visible reply). Same-model arms (signature replay,
+    redacted keep) are unchanged.
+  - #11843 — the `tools: []` fallback on tool history without declared
+    tools now rides the new closed-vocabulary key
+    `requires_tools_with_tool_history` (default `false`; pi-ai
+    openai-completions.js:595-597 + detected :1273). The default arm
+    emits NO `tools` key; dialects declaring the letter emit `tools: []`.
+- The 13 frozen wire-parity fixtures re-pinned against the v1.6.0 dist
+  (hermetic re-capture, 2026-11-23): the 6 moved digests re-pinned
+  exactly (openai_ladder_on/off, thinking_replay,
+  reasoning_details_replay, cross_model_thinking_replay, budget_field —
+  role `developer`→`system` ×5, plus the cross-model fold removal), the
+  7 stable rows + both zai_strict rows byte-held (the regression proof:
+  the strict surface is byte-stable across the whole 1.1.0→1.6.0
+  range).
+- `fixtures/wire/CAPTURE.mjs` re-imported at the promoted v1.6.0 oracle
+  dist: the committed driver now reproduces ALL 11 current fixture
+  bytes byte-exactly (header digest table + import line re-pinned;
+  provenance note dated). `CAPTURE-STRICT.mjs` byte-held.
+
 ## 0.9.0 (2026-11-15)
 
 - Tool-args finalize honesty (I06): an arguments scratch that fails the

@@ -6,7 +6,7 @@ module Fast
     # the codec arms. Nothing here is provider detection, a catalog, or a
     # base-URL constant — the consumer declares, the codec obeys (§4).
     #
-    # The vocabulary is CLOSED to the 14 keys declared below. Unknown keys
+    # The vocabulary is CLOSED to the 15 keys declared below. Unknown keys
     # and unknown enum values raise ArgumentError AT DECLARATION TIME —
     # fail loud, never silently mistranslate (the no-universal-translation
     # discipline).
@@ -16,7 +16,12 @@ module Fast
       VOCABULARY = {
         thinking_format: [:openai, %i[openai zai deepseek].freeze],
         max_tokens_field: ["max_completion_tokens", %w[max_completion_tokens max_tokens].freeze],
-        supports_developer_role: [true, nil],
+        # v1.6.0 #10741 (pi openai-completions.js:1259-1265 detected
+        # `supportsDeveloperRole = isOpenAI` + :890 instructionRole): the
+        # developer role is OpenAI's — other hosts' chat templates reject
+        # it, and every host accepts system, so the DEFAULT is false and
+        # OpenAI's own API hosts declare true explicitly.
+        supports_developer_role: [false, nil],
         supports_reasoning_effort: [true, nil],
         supports_store: [true, nil],
         supports_usage_in_streaming: [true, nil],
@@ -30,6 +35,11 @@ module Fast
         # I63 (pi detectCompat :1675): OpenAI compatibility alone does not
         # imply strict JSON-schema tool support — data, not detection.
         supports_strict_mode: [false, nil],
+        # v1.6.0 #11843 (pi openai-completions.js:595-597 the `tools: []`
+        # fallback + :1273 the detected default false): some hosts reject
+        # a tool-history turn with no tools key; only dialects that
+        # declare this true emit the empty tools array.
+        requires_tools_with_tool_history: [false, nil],
       }.freeze
 
       attr_reader :name

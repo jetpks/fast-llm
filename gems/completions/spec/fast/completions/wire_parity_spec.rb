@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 # BYTE-PARITY harness (Specification §12.2–§12.3; AC2). The 13 canonical
-# request bodies recorded from REAL pi (11 from the installed
-# @earendil-works/pi-ai 1.1.0 dist, driven hermetically — provenance:
+# request bodies recorded from REAL pi (11 captured hermetically from the
+# @earendil-works/pi-ai dist — originally 1.1.0, re-captured against the
+# v1.6.0 dist on 2026-11-23 per the I115 digest re-pin; provenance:
 # fixtures/wire/CAPTURE.mjs; plus the two I63 strict-sampling scenarios
 # from the 1.2.0 dist — fixtures/wire/CAPTURE-STRICT.mjs; frozen digests
 # in the drivers' headers + the table below) are replayed through the
@@ -77,16 +78,16 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
   # fixture's request_body. Table order = the frozen scenario order.
   FROZEN_DIGESTS = {
     "fireworks_plain" => "0b9da927d3cab0b8b41ecb634fde099729e03f817ef6ba3aba26720df2130d93",
-    "openai_ladder_on" => "b05b45aeb3a4f7bdfa12d142e839882855688a246ead4d016fbe474188dfaed2",
-    "openai_ladder_off" => "60914406494e2e8403de6b932f01cd5d901c9ae4c4de75e283b25656fa6304b1",
+    "openai_ladder_on" => "a7569746d7d76f927e56a63935c34c6005bca38f48346a572d858e86db6a8c77",
+    "openai_ladder_off" => "5def24d7711819d5a609d94b515c3c89bf05e4b1b36434dab4ff2923a9aa2533",
     "zai_on" => "9a23aee6b115cce0bd6a608465f2c56332123e47a0f22c491793c0a4d0e45c13",
     "zai_off" => "88dd5af69ceb68bbc41aad9ddfbc4dcb36e0dd66fec3563054d484cc0f727f7c",
     "deepseek_on" => "ce98edaee2ecb634dcd4461e3e56cfc4f973cd37026fc390b63ac2bdfbfec5f5",
     "tool_roundtrip" => "940d8f5b262f59a3db7b27a70471ac96a40c170264edc83219bef83dce1e9038",
-    "thinking_replay" => "c9259d5da9ca8c63186522c24b9bdfd1fe81aa0903187b0f50634b56eb3c7e6c",
-    "reasoning_details_replay" => "c21da08d520e246652b33bedf76d89db581692a7775de5181dc8c63013a0ae4e",
-    "cross_model_thinking_replay" => "809a9b7ecc99399379031524ed5810677e31c22cac2f64eb6e728602ea5939fc",
-    "budget_field" => "fb29e70650e9708f394c319d3c8ecacb840c134d214f9ce2747151356b86d1b7",
+    "thinking_replay" => "7093eff382dc5af5f2cb74f1d031b8b3e5330cc85f899b1b4858c550b57bc89a",
+    "reasoning_details_replay" => "f910f27e72efaf5dca1be07ab7703830482c093fc0e46efe8503d5263830cb6a",
+    "cross_model_thinking_replay" => "7b737b8f59590d748f31286aa597ec87e1933fd59fb853069e4756994e4d891f",
+    "budget_field" => "1e6dd9ae04ff155060a4ea65fea65e8680ff5d22d232e20c83d8f0d210d5d00f",
     "zai_strict_tool" => "d7470202a2f66216b3d0381bb18d3c5c29082e5c334b7fb87c2410d65ce824a8",
     "zai_strict_undeclared" => "fead3755e34689d502cbb865d6d424ccc84b4453d8724aa8fee713f9516a60c9",
   }.freeze
@@ -102,8 +103,9 @@ RSpec.describe "Fast::Completions wire parity — recorded pi fixtures (§12.2�
   # HARNESS-LOCAL capture-era compat (architect ruling on the I63
   # PHASE-0-class conflict — never enters dialects.rb's shipped registry;
   # the shipped trio stays :zai/:deepseek/:fireworks). The zai_on/zai_off
-  # fixtures are pi-ai 1.1.0 captures, from BEFORE strict emission existed
-  # on this surface: pi 1.2.0 — the generation the two I63 captures come
+  # fixtures are pi-ai 1.1.0-era captures (re-captured BYTE-IDENTICAL at
+  # the v1.6.0 dist on 2026-11-23 — the regression proof), from BEFORE
+  # strict emission existed on this surface: pi 1.2.0 — the generation the two I63 captures come
   # from — emits ,"strict":false on exactly this wire (undeclared §12.3
   # read tool, strict-capable zai compat; 501B → 516B, proof fixture
   # zai_strict_undeclared, SHA256 fead3755e34689d502cbb865d6d424ccc84b4453

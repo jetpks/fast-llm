@@ -78,8 +78,9 @@ module Fast
       # undeclared tools and non-strict dialects: no strict key ever there,
       # and the emitted parameters are the declared object itself
       # (object-identity emission). zai tool_stream right after; the
-      # `tools: []` fallback when tool history exists with no declared
-      # tools.
+      # `tools: []` fallback on tool history rides the dialect letter
+      # (requires_tools_with_tool_history, v1.6.0 #11843 — default
+      # false; pi openai-completions.js:595-597 + detected :1273).
       def apply_tools(params, tools, messages, dialect)
         if tools.any?
           strict_capable = dialect.supports_strict_mode
@@ -96,7 +97,7 @@ module Fast
             {"type" => "function", "function" => function}
           end
           params[:tool_stream] = true if dialect.zai_tool_stream
-        elsif tool_history?(messages)
+        elsif dialect.requires_tools_with_tool_history && tool_history?(messages)
           params[:tools] = []
         end
       end
