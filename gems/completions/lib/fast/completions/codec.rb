@@ -6,7 +6,7 @@ module Fast
     # pi utils/transform-messages.ts + api/openai-completions.ts
     # convertMessages :1300-1402).
     #
-    # Codec.normalize ports transformMessages (thinking folding, redacted
+    # Codec.normalize ports transformMessages (thinking rules, redacted
     # rules, orphaned tool-call synthetics, system hold-back). Codec
     # .to_wire_messages ports convertMessages (the wire shapes). The two
     # passes mirror pi's split: stream() resolves the transcript, then
@@ -59,11 +59,13 @@ module Fast
           model: msg.model, api: msg.api, usage: msg.usage, stop_reason: msg.stop_reason)
       end
 
-      # Thinking-block rules (transform-messages.ts :103-118):
-      # redacted → same-model keep, cross-model drop; same-model keeps
-      # blocks WITH signatures even when the text is empty (OpenAI
+      # Thinking-block rules (transform-messages.ts :98-118, v1.6.0
+      # #10995): redacted → same-model keep, cross-model drop; same-model
+      # keeps blocks WITH signatures even when the text is empty (OpenAI
       # encrypted reasoning); empty/whitespace text drops; cross-model
-      # non-empty folds to a text block.
+      # non-empty thinking DROPS — never folds to text ("Thinking from
+      # another model is dropped": sending it as plain text makes the new
+      # model treat it as part of the visible reply).
       def normalize_thinking_block(block, same_model)
         if block[:redacted]
           return same_model ? [block] : []
@@ -74,7 +76,10 @@ module Fast
         return [] if block[:thinking].to_s.scrub { "" }.strip.empty?
         return [block] if same_model
 
-        [{type: :text, text: block[:thinking]}]
+        # Cross-model non-empty thinking drops with the redacted arm
+        # (pi v1.6.0 transform-messages.js:98-105 — the single
+        # `if (!isSameModel) return []` gate).
+        []
       end
 
       # Second pass (transform-messages.ts :143-201): synthetic results
