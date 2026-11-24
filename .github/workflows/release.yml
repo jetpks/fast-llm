@@ -53,6 +53,12 @@ jobs:
               GEM_DIR=gems/embeddings
               GEMSPEC=fast-embeddings.gemspec
               REQUIRE=fast/embeddings
+              # First publication of a NEW gem via a pending trusted
+              # publisher must assert the owning rubygems.org account ID
+              # at the OIDC token exchange (GHSA-48p7-6mjr-3jjj). Existing
+              # gems leave OWNER unset and take the stock credentials
+              # action below.
+              OWNER=231507
               ;;
             v*)
               echo "::error::Bare v* tags are retired: this monorepo releases per gem — use completions-v<semver> or embeddings-v<semver> (e.g. completions-v0.11.0)"
@@ -75,6 +81,7 @@ jobs:
             echo "GEMSPEC=$GEMSPEC"
             echo "REQUIRE=$REQUIRE"
             echo "VERSION=$VERSION"
+            echo "OWNER=$OWNER"
           } >> "$GITHUB_ENV"
 
       # Monorepo (I51 judge ruling): a nested gemspec is unbuildable from
@@ -124,9 +131,36 @@ jobs:
       # Trusted publishing: no API token. Auth is a short-lived OIDC
       # credential minted at run time, scoped to this repo + workflow
       # (rubygems.org trusted publisher: jetpks/fast-llm, release.yml).
+      #
+      # Two paths, selected by the dispatch map's OWNER field:
+      #  - OWNER unset (the gem already exists on rubygems): the stock
+      #    action, which exchanges the OIDC token keylessly.
+      #  - OWNER set (first publication of a NEW gem): rubygems.org's
+      #    GHSA-48p7-6mjr-3jjj rule requires the workflow to assert the
+      #    owning account ID at the token exchange, and no action release
+      #    exposes the `owner` parameter yet
+      #    (rubygems/configure-rubygems-credentials#489) — so the exchange
+      #    runs inline: mint the run's OIDC token, swap it (with owner) for
+      #    a short-lived API key, mask the key. After the gem's first
+      #    publish, OWNER can be dropped from the dispatch map.
       - name: Configure RubyGems credentials
-        if: ${{ fromJSON(env.IS_TAG) }}
+        if: ${{ fromJSON(env.IS_TAG) && env.OWNER == '' }}
         uses: rubygems/configure-rubygems-credentials@v2.1.0
+
+      - name: Exchange the run's OIDC token for a first-publish RubyGems key
+        if: ${{ fromJSON(env.IS_TAG) && env.OWNER != '' }}
+        env:
+          RUBYGEMS_OWNER_ID: ${{ env.OWNER }}
+        run: |
+          set -e
+          jwt=$(curl --fail-with-body -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=rubygems.org" | jq -r .value)
+          key=$(jq -n --arg jwt "$jwt" --arg owner "$RUBYGEMS_OWNER_ID" '{jwt: $jwt, owner: $owner}' |
+            curl --fail-with-body -sS -X POST https://rubygems.org/api/v1/oidc/trusted_publisher/exchange_token \
+            -H "Content-Type: application/json" --data @- | jq -r .rubygems_api_key)
+          echo "::add-mask::$key"
+          echo "GEM_HOST_API_KEY=$key" >> "$GITHUB_ENV"
+
 
       - name: Publish to RubyGems
         if: ${{ fromJSON(env.IS_TAG) }}
