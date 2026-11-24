@@ -164,7 +164,20 @@ class MockEmbeddingsServer
     payload["usage"] = spec[:usage] if spec[:usage] # omitted entirely when not supplied
     out = JSON.generate(payload)
     io.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n" \
-      "Content-Length: #{out.bytesize}\r\n\r\n#{out}")
+      "Content-Length: #{out.bytesize}\r\n\r\n")
+    if (frame_bytes = spec[:frames])
+      # Framed delivery, the live-transport physics: write the payload in
+      # frame_bytes slices, flushing + pausing between them so a single
+      # Body#read returns ONE frame (a 1024-dim live reply is ~22KB in
+      # ~8KB frames — the 0.1.0 live-read defect's reproduction mode).
+      (0...out.bytesize).step(frame_bytes) do |offset|
+        io.write(out.byteslice(offset, frame_bytes))
+        io.flush
+        sleep 0.02
+      end
+    else
+      io.write(out)
+    end
   end
 
   # The body openai-compatible endpoints return on a schema rejection;

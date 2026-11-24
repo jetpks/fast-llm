@@ -70,6 +70,31 @@ RSpec.describe Fast::Embeddings::Client do
     expect(result.data).to all(be_a(Fast::Embeddings::Datum))
   end
 
+  # The 0.1.0 live-read defect, hermetically reproduced: a framed reply
+  # (one 1024-dim live bge-m3 reply is ~22KB in ~8KB frames) parsed only
+  # ONE frame per Body#read and failed live while single-write mocks stayed
+  # green. join reads to EOF; this spec is RED on any single-read regression.
+  it "reads a FRAMED reply to EOF (multi-frame delivery, fixed 0.1.1)" do
+    # Full-precision floats like the live wire emits (~20 bytes each in
+    # JSON): the payload lands at ~22KB — three ~8KB frames, the live
+    # geometry (small ints would fit ONE frame and hide the defect).
+    vector = Array.new(1024) { |i| (i + 1) * 0.000123456789012345 }
+    server.script([{type: :embeddings, vectors: [vector],
+                    usage: {prompt_tokens: 5, total_tokens: 5}, frames: 8192}])
+    c = client
+    result = Async do
+      begin
+        c.embed(model: "bge-m3", input: ["chunk text"], api_key: "test-key")
+      ensure
+        c.close
+      end
+    end.wait
+    expect(result.data.length).to eq(1)
+    expect(result.data[0].embedding).to eq(vector)
+    expect(result.data[0].index).to eq(0)
+    expect(result.usage.prompt_tokens).to eq(5)
+  end
+
   it "surfaces Result.usage from the wire" do
     server.script([{type: :embeddings, vectors: vectors,
                     usage: {prompt_tokens: 7, total_tokens: 9}}])

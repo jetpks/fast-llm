@@ -53,12 +53,9 @@ jobs:
               GEM_DIR=gems/embeddings
               GEMSPEC=fast-embeddings.gemspec
               REQUIRE=fast/embeddings
-              # First publication of a NEW gem via a pending trusted
-              # publisher must assert the owning rubygems.org account ID
-              # at the OIDC token exchange (GHSA-48p7-6mjr-3jjj). Existing
-              # gems leave OWNER unset and take the stock credentials
-              # action below.
-              OWNER=231507
+              # OWNER dropped at 0.1.1: the first-publish assertion was
+              # only needed while the gem did not exist (GHSA-48p7-6mjr-3jjj);
+              # existing gems take the stock credentials action below.
               ;;
             v*)
               echo "::error::Bare v* tags are retired: this monorepo releases per gem — use completions-v<semver> or embeddings-v<semver> (e.g. completions-v0.11.0)"

@@ -84,7 +84,11 @@ module Fast
           watchdog.arm
           response = @client.post(@path, headers: headers_for(api_key), body: body)
           raise_api_error(response) unless (200...300).cover?(response.status)
-          result = parse_result(response.body.read)
+          # join, never a single read: live transports deliver large replies
+          # FRAMED (one 1024-dim bge-m3 reply is ~22KB in ~8KB frames) and
+          # Body#read returns ONE frame — 0.1.0 parsed mid-float and failed
+          # live while hermetic mocks (single TCP write) stayed green.
+          result = parse_result(response.body.join)
         rescue Async::Cancel
           raise(TimeoutError, "no data within #{@timeout}s") if watchdog.fired
 
@@ -130,9 +134,11 @@ module Fast
         raise ArgumentError, "input must be a non-empty Array of Strings"
       end
 
-      # Non-2xx: read the body, map to the frozen taxonomy.
+      # Non-2xx: read the body, map to the frozen taxonomy. join for the
+      # same framing reason as the success path — a framed error body
+      # would otherwise truncate into the taxonomy's raw-body fallback.
       def raise_api_error(response)
-        body = response.body.read
+        body = response.body.join
         raise Errors.class_for_status(response.status, body).new(status: response.status, body: body)
       end
 
