@@ -3,6 +3,20 @@
 Notable changes to the fast-completions gem. The format is prose-first,
 one section per released version, newest first.
 
+## 0.11.0 (2026-11-24)
+
+- `Protocol.build_request` and `Client#stream` accept an optional `seed`
+  (I04 DR-07): the sampling-seed passthrough for consumers that own
+  their own sampling policy. The kwarg sits after `temperature` on both
+  surfaces, and the key is emitted in the request body ONLY when set
+  (the same §9.7 "only when explicitly set" discipline temperature
+  follows), directly after temperature — so a seedless request's bytes
+  are unchanged from 0.10.0 (the re-pinned wire-parity fixtures are the
+  byte-identity proof). There is deliberately no Chat surface for the
+  kwarg: the Chat owns conversations, not sampling — a consumer that
+  needs per-request seeds threads `seed:` through its own
+  `Client#stream` call (or a client-level decorator).
+
 ## 0.10.0
 
 - The dialect vocabulary absorbs the pi-ai v1.6.0 compat letters (three

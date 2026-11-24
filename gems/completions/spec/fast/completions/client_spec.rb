@@ -68,6 +68,28 @@ RSpec.describe Fast::Completions::Client do
     expect(final.usage.total_tokens).to eq(15) # the mock's 10+5
   end
 
+  # ── Seed passthrough (I04 DR-07): the Client-level kwarg, no Chat
+  # surface — the consumer is a client-side decorator, never Chat. ──
+  describe "seed passthrough (I04 DR-07)" do
+    it "Client#stream(seed: 7) puts \"seed\":7 on the wire" do
+      server.script([{type: :stream, content: "ok"}])
+      Async do
+        client.stream(model: model, messages: [Fast::Completions::Message.user("hi")], seed: 7) { |_e| }
+        client.close
+      end
+      expect(server.captured_requests.first["seed"]).to eq(7)
+    end
+
+    it "Client#stream without seed leaves the body without a seed key" do
+      server.script([{type: :stream, content: "ok"}])
+      Async do
+        client.stream(model: model, messages: [Fast::Completions::Message.user("hi")]) { |_e| }
+        client.close
+      end
+      expect(server.captured_requests.first).not_to have_key("seed")
+    end
+  end
+
   # ── Chunk-seam tolerance (I61): repair and drop-and-continue. ──
 
   it "repairs a control-char payload and flows downstream without a drop (I61)" do
