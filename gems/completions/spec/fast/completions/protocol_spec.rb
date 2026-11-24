@@ -108,6 +108,31 @@ RSpec.describe Fast::Completions::Protocol do
       expect(build(ladder_model, tools: [tool])).not_to have_key(:tool_stream)
     end
 
+    describe "seed (I04 DR-07)" do
+      def build_seed(model, **overrides)
+        described_class.build_request(model: model, messages: [], **overrides)
+      end
+
+      it "build_request(seed: nil) omits the key — byte-equality against the seedless build (I04 DR-07)" do
+        model = ladder_model(reasoning: false)
+        plain = build_seed(model, temperature: nil)
+        explicit_nil = build_seed(model, temperature: nil, seed: nil)
+        expect(explicit_nil).to eq(plain)              # same params ...
+        expect(explicit_nil.keys).to eq(plain.keys)    # ... in the same order: seedless bytes unchanged
+        expect(explicit_nil).not_to have_key(:seed)
+      end
+
+      it "build_request(seed: 42) emits params[:seed] == 42, only when set" do
+        hash = build_seed(ladder_model(reasoning: false), seed: 42)
+        expect(hash[:seed]).to eq(42)
+      end
+
+      it "when temperature and seed are both set, seed's key lands AFTER temperature (hash key-index)" do
+        hash = build_seed(ladder_model(reasoning: false), temperature: 0.7, seed: 42)
+        expect(hash.keys.index(:seed)).to be > hash.keys.index(:temperature)
+      end
+    end
+
     describe "strict tool emission (I63 — pi convertTools openai-completions.ts :1505-1516)" do
       def read_tool(strict_config)
         Class.new(Fast::Completions::Tool) do

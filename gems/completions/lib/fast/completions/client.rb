@@ -122,11 +122,11 @@ module Fast
       # (cancel never salvages, never retries), then the network family,
       # then the StandardError catch-all.
       def stream(model:, messages:, instructions: nil, tools: [], thinking: nil,
-        max_tokens: nil, temperature: nil, session_id: nil, &block)
+        max_tokens: nil, temperature: nil, seed: nil, session_id: nil, &block)
         request = Protocol.build_request(
           model: model, messages: messages, instructions: instructions,
           tools: tools, thinking: thinking, max_tokens: max_tokens,
-          temperature: temperature,
+          temperature: temperature, seed: seed,
         )
         headers = default_headers.merge(session_headers(model.dialect, session_id))
         body = JSON.generate(request)

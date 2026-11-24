@@ -39,10 +39,14 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # Monorepo guard (I51 judge ruling): a nested gemspec CANNOT be built
-  # from the repo root ("gem build gems/completions/…gemspec" is
+  # from the repo root ("gem build gems/<gem>/…gemspec" is
   # RubyGems-impossible — Dir.glob base + invocation-cwd validation), and a
-  # root-level suite run never exercises packaging. Build from the gemspec
-  # directory and prove the package carries lib/.
+  # root-level suite run never exercises packaging. The loop — not a
+  # hardcoded list — is the guard: every directory under gems/* carrying a
+  # gemspec is built from its own directory (the cd lives in the run
+  # script; working-directory cannot carry a per-iteration dir) and the
+  # package must carry its require path lib/fast/<gem>/ (dir name =
+  # require leaf). The NEXT gem needs no ci.yml edit.
   gem-build:
     runs-on: ubuntu-latest
     env:
@@ -50,15 +54,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
-      - name: Build from the gemspec directory
-        working-directory: gems/completions
-        run: gem build fast-completions.gemspec
-      - name: The package must carry lib/
-        working-directory: gems/completions
+      - name: Build every gem from its gemspec directory
         run: |
-          tar -xOf fast-completions-*.gem data.tar.gz | tar -tzf - | tee /tmp/pkg-files.log
-          grep -q 'lib/fast/completions/client.rb' /tmp/pkg-files.log
-          grep -q 'lib/fast/completions/sse.rb' /tmp/pkg-files.log
+          shopt -s nullglob
+          built=0
+          for dir in gems/*/; do
+            gemspecs=("$dir"*.gemspec)
+            [ ${#gemspecs[@]} -gt 0 ] || continue
+            (cd "$dir" && gem build "${gemspecs[0]##*/}")
+            built=$((built+1))
+          done
+          [ "$built" -gt 0 ] # no gem under gems/* — fail loudly
+      - name: Every package must carry its lib/fast/<gem>/ require path
+        run: |
+          shopt -s nullglob
+          checked=0
+          for dir in gems/*/; do
+            packages=("$dir"*.gem)
+            [ ${#packages[@]} -gt 0 ] || continue
+            leaf="$(basename "$dir")"
+            tar -xOf "${packages[0]}" data.tar.gz | tar -tzf - | tee /tmp/pkg-files.log | grep -q "lib/fast/$leaf/"
+            checked=$((checked+1))
+          done
+          [ "$checked" -gt 0 ] # nothing built — fail loudly
 
   security-audit:
     runs-on: ubuntu-latest

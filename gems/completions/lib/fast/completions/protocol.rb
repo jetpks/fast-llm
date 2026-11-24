@@ -9,7 +9,10 @@ module Fast
     # pi buildParams (openai-completions.ts :802-1000): model, messages,
     # stream, stream_options, store, max_tokens|max_completion_tokens,
     # temperature, tools (+tool_stream), thinking arms, thinking budget.
-    # NOTHING else (§14: no tool_choice, no sampling, no prompt_cache_*).
+    # Plus one lane extension (I04 DR-07): seed, emitted directly after
+    # temperature, ONLY when explicitly set — a seedless request's bytes
+    # are unchanged. NOTHING else beyond those (§14: no tool_choice,
+    # no sampling, no prompt_cache_*).
     module Protocol
       # pi api/simple-options.ts :66-73.
       DEFAULT_THINKING_BUDGETS = {minimal: 1024, low: 2048, medium: 8192, high: 16384}.freeze
@@ -22,7 +25,7 @@ module Fast
       # Build the request Hash. `thinking` is the raw requested level
       # (nil = off-equivalent: no effort — pi streamSimple :760-763).
       def build_request(model:, messages:, instructions: nil, tools: [],
-        thinking: nil, max_tokens: nil, temperature: nil)
+        thinking: nil, max_tokens: nil, temperature: nil, seed: nil)
         dialect = model.dialect
         effort = resolve_effort(model, thinking)
         normalized = Codec.normalize(messages, model)
@@ -41,6 +44,7 @@ module Fast
         end
 
         params[:temperature] = temperature unless temperature.nil? # §9.7: only when explicitly set
+        params[:seed] = seed unless seed.nil? # I04 DR-07: only when explicitly set, after temperature
 
         apply_tools(params, tools, messages, dialect)     # §9.8
         apply_thinking_arms(params, model, dialect, effort, effective_max) # §9.9-9.10
