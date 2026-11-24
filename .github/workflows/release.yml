@@ -2,9 +2,16 @@ name: Release
 
 on:
   push:
+    # Per-gem release tags: <gem>-v<semver>. The bare `v*` form is
+    # RETIRED but must still REACH the workflow so the dispatch step can
+    # fail loudly naming the convention — a bare tag that triggers
+    # nothing fails silently, which is exactly the failure mode this
+    # dispatch kills.
     tags:
+      - "completions-v*"
+      - "embeddings-v*"
       - "v*"
-  # Dry-run: build + verify the packaged gem without publishing anything.
+  # Dry-run: build + verify every packaged gem without publishing anything.
   workflow_dispatch:
 
 jobs:
@@ -15,7 +22,9 @@ jobs:
       contents: write # create the GitHub release
       id-token: write # OIDC token for RubyGems trusted publishing
     env:
-      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      # After the dispatch a tag IS a per-gem release tag; the dry-run
+      # (workflow_dispatch) is not.
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
       MISE_RUBY_VERSION: "4.0"
     steps:
       - uses: actions/checkout@v7
@@ -23,34 +32,94 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@v4
 
-      # Monorepo (I51 judge ruling): a nested gemspec is unbuildable from
-      # the repo root — `gem build` must run inside gems/completions.
-      - name: Build gem
-        working-directory: gems/completions
+      # The per-gem dispatch map (the job's first decision): the tag
+      # prefix selects the gem — directory, gemspec, require path. A bare
+      # `v*` tag has no legacy path: fail loudly, naming the convention.
+      - name: Dispatch per-gem release map
+        if: ${{ fromJSON(env.IS_TAG) }}
         run: |
-          gem build fast-completions.gemspec
+          set -e
+          case "$GITHUB_REF_NAME" in
+            completions-v*)
+              GEM=completions
+              GEM_NAME=fast-completions
+              GEM_DIR=gems/completions
+              GEMSPEC=fast-completions.gemspec
+              REQUIRE=fast/completions
+              ;;
+            embeddings-v*)
+              GEM=embeddings
+              GEM_NAME=fast-embeddings
+              GEM_DIR=gems/embeddings
+              GEMSPEC=fast-embeddings.gemspec
+              REQUIRE=fast/embeddings
+              ;;
+            v*)
+              echo "::error::Bare v* tags are retired: this monorepo releases per gem — use completions-v<semver> or embeddings-v<semver> (e.g. completions-v0.11.0)"
+              exit 1
+              ;;
+            *)
+              echo "::error::Tag $GITHUB_REF_NAME matches no release prefix — use completions-v<semver> or embeddings-v<semver>"
+              exit 1
+              ;;
+          esac
+          # The version is the tag with the <gem>-v prefix stripped
+          # (completions-v0.11.0 → 0.11.0). Prerelease detection runs on
+          # THIS stripped value, never the raw tag name (the hyphen in
+          # `<gem>-v` would mark every release a prerelease).
+          VERSION="${GITHUB_REF_NAME#"$GEM"-v}"
+          {
+            echo "GEM=$GEM"
+            echo "GEM_NAME=$GEM_NAME"
+            echo "GEM_DIR=$GEM_DIR"
+            echo "GEMSPEC=$GEMSPEC"
+            echo "REQUIRE=$REQUIRE"
+            echo "VERSION=$VERSION"
+          } >> "$GITHUB_ENV"
+
+      # Monorepo (I51 judge ruling): a nested gemspec is unbuildable from
+      # the repo root — `gem build` runs INSIDE the gem's directory.
+      - name: Build gem
+        if: ${{ fromJSON(env.IS_TAG) }}
+        run: |
+          cd "$GEM_DIR"
+          gem build "$GEMSPEC"
           mkdir -p ../../pkg/
           mv *.gem ../../pkg/
 
-      # The pre-release rule (fast-* family), monorepo-adapted: install
-      # the built .gem into an isolated GEM_HOME and exercise it from there
-      # — the checkout's lib/ is never on the load path — so a file missing
-      # from spec.files or a require-path mistake fails here, not after
-      # publishing. Unlike fast-uuid this gem HAS a runtime dependency
-      # (async-http), so the install resolves it from rubygems (no
-      # --local): isolation of the packaged code, not of the network.
-      - name: Verify the packaged gem
+      # Dry-run build: every gem in the map, no publish.
+      - name: Build every gem (dry-run)
+        if: ${{ !fromJSON(env.IS_TAG) }}
         run: |
-          export GEM_HOME="$RUNNER_TEMP/gemhome"
-          gem install --no-document pkg/fast-completions-*.gem
-          cd "$RUNNER_TEMP"
-          ruby -e '
-            require "fast/completions"
-            require "fast/completions/sse"
-            client = Fast::Completions::Client.new(base_url: "http://127.0.0.1:1", api_key: "ci-smoke")
-            raise "client not constructible" if client.nil?
-            puts Fast::Completions::VERSION
-          '
+          set -e
+          mkdir -p pkg/
+          for dir in gems/*/; do
+            [ -f "$dir"*.gemspec ] || continue
+            (cd "$dir" && gem build *.gemspec)
+            mv "$dir"*.gem pkg/
+          done
+
+      # The pre-release rule (fast-* family), monorepo-adapted and now
+      # per-gem: script/verify-packaged.rb installs the built .gem into an
+      # isolated GEM_HOME and requires the gem's require path from OUTSIDE
+      # the checkout — the checkout's lib/ is never on the load path — so
+      # a file missing from spec.files or a require-path mistake fails
+      # here, not after publishing. Dependencies resolve from rubygems as
+      # today (async-http is a real runtime dependency): isolation of the
+      # packaged code, not of the network.
+      - name: Verify the packaged gem
+        if: ${{ fromJSON(env.IS_TAG) }}
+        run: ruby script/verify-packaged.rb "$GEM_NAME" "$REQUIRE"
+
+      - name: Verify every packaged gem (dry-run)
+        if: ${{ !fromJSON(env.IS_TAG) }}
+        run: |
+          set -e
+          for pair in "completions:fast/completions" "embeddings:fast/embeddings"; do
+            gem="${pair%%:*}"
+            require="${pair#*:}"
+            ruby script/verify-packaged.rb "fast-$gem" "$require"
+          done
 
       # Trusted publishing: no API token. Auth is a short-lived OIDC
       # credential minted at run time, scoped to this repo + workflow
@@ -61,24 +130,33 @@ jobs:
 
       - name: Publish to RubyGems
         if: ${{ fromJSON(env.IS_TAG) }}
-        run: gem push pkg/fast-completions-*.gem
+        run: gem push pkg/"$GEM_NAME"-*.gem
 
       - name: Smoke-test the published gem
         if: ${{ fromJSON(env.IS_TAG) }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
           for attempt in 1 2 3 4 5; do
-            gem install fast-completions --version "$version" && break
+            gem install "$GEM_NAME" --version "$VERSION" && break
             echo "not indexed yet (attempt $attempt) — retrying in 15s"
             sleep 15
           done
-          ruby -e 'require "fast/completions"; puts Fast::Completions::VERSION' | grep -Fx "$version"
+          # The same isolated require + VERSION print as the packaged-gem
+          # verify, now against the PUBLISHED gem from rubygems.
+          export GEM_HOME="$RUNNER_TEMP/gemhome-smoke"
+          cd "$RUNNER_TEMP"
+          ruby -e '
+            constant = ARGV[0].split("/").map { |segment| segment.split("_").map(&:capitalize).join }.join("::")
+            require ARGV[0]
+            puts Object.const_get(constant).const_get(:VERSION)
+          ' "$REQUIRE" | grep -Fx "$VERSION"
 
       - name: Create GitHub Release
         if: ${{ fromJSON(env.IS_TAG) }}
         uses: softprops/action-gh-release@v3
         with:
-          files: pkg/*.gem
+          files: pkg/${{ env.GEM_NAME }}-*.gem
           generate_release_notes: true
-          # Prerelease tags (e.g. v0.1.0.pre.1) must not be marked "latest".
-          prerelease: ${{ contains(github.ref_name, '.rc') || contains(github.ref_name, '.beta') || contains(github.ref_name, '.alpha') || contains(github.ref_name, '.pre') || contains(github.ref_name, '-') }}
+          # Prerelease detection runs on the STRIPPED version (env.VERSION),
+          # never the raw tag name: the hyphen in `completions-v0.11.0`
+          # would mark every release a prerelease.
+          prerelease: ${{ contains(env.VERSION, '.rc') || contains(env.VERSION, '.beta') || contains(env.VERSION, '.alpha') || contains(env.VERSION, '.pre') || contains(env.VERSION, '-') }}
